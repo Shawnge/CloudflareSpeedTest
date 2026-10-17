@@ -147,6 +147,106 @@ IP 地址,已发送,已接收,丢包率,平均延迟,下载速度(MB/s),地区�
 > _大家可以按自己需求，对完整结果**进一步筛选处理**，或者去看一看进阶使用**指定过滤条件**！_
 
 ****
+## \# Docker Compose 部署（定时测速 + 自动发布优选 IP）
+
+本仓库是 [XIU2/CloudflareSpeedTest](https://github.com/XIU2/CloudflareSpeedTest) 的 fork，额外提供一套 Docker Compose 部署：
+**定时测速 → 把结果转成 `IP#优选区域-延时m` 文本 → 通过 GitHub API 发布到本仓库的 `result/result.txt`**，
+客户端（如 [edgetunnel](https://github.com/cmliu/edgetunnel)）直接读这个 raw 链接即可。
+
+整个流程跑在自己服务器上，默认每天 4 点（容器时区）跑一轮。
+
+### 1. 准备 token
+
+在 GitHub 上创建一个 **fine-grained personal access token**，只授权这一个仓库：
+
+- **Repository access** → `Only select repositories` → 选中 `Shawnge/CloudflareSpeedTest`
+- **Permissions** → `Repository permissions` → **`Contents: Read and write`**
+- **不需要**任何其他权限（Actions / Workflows / Administration 都不用勾）
+
+权限给到最小，即使这个 token 泄漏，影响面也只有本仓库的内容读写。
+
+### 2. 配置 `.env`
+
+```bash
+git clone https://github.com/Shawnge/CloudflareSpeedTest.git
+cd CloudflareSpeedTest
+
+cat > .env <<'EOF'
+GITHUB_TOKEN=github_pat_在这里粘贴你的token
+EOF
+```
+
+其余配置项都可留空用默认值：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `GITHUB_TOKEN` | 无（**留空 = 只测速不发布**） | fine-grained PAT，Contents 读写 |
+| `GITHUB_REPO` | `Shawnge/CloudflareSpeedTest` | `owner/repo` |
+| `GITHUB_BRANCH` | `master` | 目标分支 |
+| `RESULT_PATH` | `result/result.txt` | 文件在仓库内的路径 |
+| `REGIONS` | `HKG,NRT,SIN,SJC,LAX` | 保留的地区码，**顺序即输出顺序** |
+| `TOP_N` | `8` | 每个地区保留延迟最低的条数 |
+| `CRON_SCHEDULE` | `0 4 * * *` | 5 段 cron 表达式；**留成空值 = 只跑一次后退出** |
+| `RUN_ON_START` | `1` | 容器启动时是否先立即跑一轮 |
+| `TZ` | `Asia/Shanghai` | 影响 cron 的触发时刻 |
+| `CFST_ARGS` | 空 | 追加给 cfst 的参数（与 compose 的 `command:` 合并） |
+| `CFST_URL` | 空（用 cfst 内置地址） | cfst 的下载测速地址，等价于 `-url`；选法见 §5 |
+| `PUBLISH_DRY_RUN` | `0` | 设 `1` = 只转换并打印将要提交的内容，**不发任何请求** |
+
+cfst 自身的测速参数通过 compose 的 `command:` 传递，默认 `["-tl","200","-sl","50","-dn","20"]`
+（`-tl` 平均延迟上限 ms、`-sl` 下载速度下限 MB/s、`-dn` 下载测速数量）。
+
+> `.env` 已同时写进 `.gitignore` 与 `.dockerignore`，既不会被提交，也不会被 `COPY . .` 烤进镜像层。
+
+### 3. 起容器
+
+```bash
+docker compose up -d --build    # 首次必须带 --build
+docker compose logs -f          # 看进度；测速本身要几分钟
+```
+
+> [!IMPORTANT]
+> `docker compose up` / `run` **不会自动重建镜像**。改过 `entrypoint.sh`、`publish.sh` 或 `Dockerfile` 后
+> 一定要重新 `docker compose build`（或 `up -d --build`），否则会拿本地旧镜像跑，
+> 症状是「日志看似正常、却没有产出」——很容易误判成脚本 bug。
+
+产物落在宿主机 `./output/`：`result.csv`（cfst 原始输出）、`result.txt`（转换后要发布的内容）、`cfst.log`（定时任务的日志）。
+`./output/` 已在 `.gitignore` 内，不会污染仓库工作区。
+
+### 4. 给客户端填的地址
+
+```
+https://raw.githubusercontent.com/Shawnge/CloudflareSpeedTest/master/result/result.txt
+```
+
+> [!NOTE]
+> 发布后 raw 有约 **5 分钟 CDN 缓存**，客户端可能晚几分钟才看到新内容。
+> 验证时拼个参数可绕过缓存：
+> `curl "https://raw.githubusercontent.com/Shawnge/CloudflareSpeedTest/master/result/result.txt?t=$(date +%s)"`
+
+### 5. 排查
+
+| 现象 | 原因与处理 |
+|---|---|
+| 日志出现 `发布失败: HTTP 401` | token 过期或被撤销。换新 token 后 `docker compose up -d --force-recreate`。**容器不会因此死掉**，远端仍保留上一版好结果 |
+| 日志出现 `结果为空，跳过发布` | 本轮没测出可用结果，远端保持上一版。原因见下面两行 |
+| 地区码全是 `N/A`、下载速度全是 `0.00` | 下载测速没成功 → 拿不到地区码 → 被空结果守卫拦住。① 给 `command:` 加 `"-debug"` 看真实报错；② 确认没有加 `-dd`（禁用下载测速会导致地区码全为 `N/A`）；③ 换 `CFST_URL`（见下一行） |
+| 想换测速地址 | `CFST_URL` 的域名必须由 **Cloudflare 边缘**提供服务：cfst 会拿 `ip.txt` 里的 IP 直接拨号、SNI/Host 用该域名，所以要用「正常挂在 CF 上的域名」下的大文件（可下载、>200MB、走 CF CDN）。**不要**填 `speed.cloudflare.com`——实测它不由任意 CF 边缘提供，拿 `ip.txt` 的 IP 连它会 TLS 握手失败（cfst 报 `下载测速失败 ... EOF`），地区码永远填不上 |
+| 定时没触发 | 检查 `TZ`；`docker compose exec cfst crontab -l` 可以看到实际装进容器的那一行 |
+| 想先试跑、不写远端 | `PUBLISH_DRY_RUN=1`（或 `docker compose run --rm -e PUBLISH_DRY_RUN=1 -e CRON_SCHEDULE= cfst`）先跑一轮看清要提交的内容 |
+| 只想测速不发布 | `GITHUB_TOKEN` 留空即可。注意此时若 `CRON_SCHEDULE` 非空，entrypoint 会当作**配置错误**直接退出——避免「每天静默不干活、没人发现」 |
+
+### 6. 本地测试
+
+改过 `publish.sh` / `entrypoint.sh` 后：
+
+```bash
+sh tests/run_tests.sh
+```
+
+macOS 与 `alpine:3.19` 上都能跑；本机没装 Docker 时，与镜像相关的用例会 `SKIP`。
+
+****
 ## \# 进阶使用
 
 直接运行使用的是默认参数，如果想要**更好更高效的寻找最适合自己的** IP，那么就需要善用各个参数的搭配组合：

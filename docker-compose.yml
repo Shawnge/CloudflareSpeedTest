@@ -33,19 +33,27 @@ services:
       # 时区，决定 cron 在本地几点触发
       TZ: ${TZ:-Asia/Shanghai}
 
-      # cfst 的下载测速地址。留空则用 cfst 内置的 https://cf.xiu2.xyz/url。
-      # 该内置地址在部分网络会返回 HTTP 403，症状是所有下载速度 0.00、地区码全是 N/A、
-      # 最终结果为空。实测可用的替代（Cloudflare 官方，且响应头里带 colo，能正确填地区码）：
-      #   https://speed.cloudflare.com/__down?bytes=200000000
+      # cfst 的下载测速地址（等价于给 cfst 传 -url）。留空则用内置的 https://cf.xiu2.xyz/url。
+      #
+      # 【这个地址怎么选】cfst 会拿 ip.txt 里的 IP 直接拨号，SNI/Host 用该地址的域名，
+      # 所以该域名必须由 Cloudflare 边缘提供服务 —— 也就是「一个正常挂在 CF 上的域名」
+      # （任意网页/文件地址都行，要求：可直接下载、大于 200MB）。
+      # 注意 **不要** 用 speed.cloudflare.com：实测它不由任意 CF 边缘提供，拿 ip.txt 里的
+      # IP 连它会 TLS 握手失败（cfst 报 `下载测速失败 ... EOF`），地区码永远填不上。
+      #
+      # 内置地址不保证可用（cfst README 原话「默认地址不保证可用性，建议自建」）。
+      # 症状：地区码全是 N/A、下载速度全是 0.00、最终结果为空。
+      # 排查：给 command 加上 "-debug" 看真实报错；换成一个你自建在 CF 上的大文件地址。
       CFST_URL: ${CFST_URL:-}
 
       # 仅用于验证/调试：1 = 只转换并打印将要提交的 JSON，不发出任何请求，
       # 因此不会写远端。确认无误后设回 0（或删除本行）。
       PUBLISH_DRY_RUN: ${PUBLISH_DRY_RUN:-0}
 
-    # 传给 cfst 的测速参数。常用：
-    #   -tl 200   延迟测速 IP 数量        -sl 50   下载速度下限(MB/s)
-    #   -dn 20    下载测速 IP 数量        -dd      禁用下载测速（注意：会让地区码全变成 N/A）
+    # 传给 cfst 的测速参数。常用（措辞照 cfst README）：
+    #   -tl 200   平均延迟上限(ms)      -sl 50   下载速度下限(MB/s)
+    #   -dn 20    下载测速数量          -dd      禁用下载测速（注意：会让地区码全变成 N/A）
+    #   提示：-sl 设得过高而网络达不到时，cfst 会测遍所有候选 IP 才返回，单轮可能很久。
     command: ["-tl", "200", "-sl", "50", "-dn", "20"]
 
     # 定时模式下容器要常驻，异常退出自动拉起
