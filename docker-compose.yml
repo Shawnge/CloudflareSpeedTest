@@ -1,0 +1,42 @@
+services:
+  cfst:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cfst:latest
+    container_name: cfst
+
+    # 结果文件写到容器内 /data，落到宿主 ./output（已在 .gitignore 里，不污染仓库工作区）
+    volumes:
+      - ./output:/data
+
+    environment:
+      # 【必须】GitHub 令牌：fine-grained PAT，只授权目标仓库，权限 Contents: Read and write。
+      # 放在与本文件同目录的 .env 里（.env 已被 .gitignore 与 .dockerignore 排除）。
+      # 留空只测速不发布；此时若 CRON_SCHEDULE 非空，entrypoint 会报配置错误并退出。
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+
+      # 发布目标
+      GITHUB_REPO: ${GITHUB_REPO:-Shawnge/CloudflareSpeedTest}
+      GITHUB_BRANCH: ${GITHUB_BRANCH:-master}
+      RESULT_PATH: ${RESULT_PATH:-result/result.txt}
+
+      # 筛选规则：保留的地区码（顺序即输出顺序）、每区保留延迟最低的条数
+      REGIONS: ${REGIONS:-HKG,NRT,SIN,SJC,LAX}
+      TOP_N: ${TOP_N:-8}
+
+      # 定时：5 段 cron 表达式。注意这里用的是 “-” 而不是 “:-”，
+      # 因此把 .env 里的 CRON_SCHEDULE 留成空值即可让容器只跑一次后退出。
+      CRON_SCHEDULE: ${CRON_SCHEDULE-0 4 * * *}
+      RUN_ON_START: ${RUN_ON_START:-1}
+
+      # 时区，决定 cron 在本地几点触发
+      TZ: ${TZ:-Asia/Shanghai}
+
+    # 传给 cfst 的测速参数。常用：
+    #   -tl 200   延迟测速 IP 数量        -sl 50   下载速度下限(MB/s)
+    #   -dn 20    下载测速 IP 数量        -dd      禁用下载测速（注意：会让地区码全变成 N/A）
+    command: ["-tl", "200", "-sl", "50", "-dn", "20"]
+
+    # 定时模式下容器要常驻，异常退出自动拉起
+    restart: unless-stopped

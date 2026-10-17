@@ -1,0 +1,14 @@
+.git
+.github
+.gitattributes
+.gitignore
+Dockerfile
+.dockerignore
+README.md
+LICENSE
+result.csv
+cfst
+docker-compose.yml
+result
+output
+.env

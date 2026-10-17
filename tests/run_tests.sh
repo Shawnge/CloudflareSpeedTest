@@ -9,8 +9,11 @@ trap 'rm -rf "$TMP"' EXIT
 
 PASS=0
 FAIL=0
+SKIPPED=0
 ok() { PASS=$((PASS + 1)); printf 'PASS %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL %s — %s\n' "$1" "$2"; }
+skip() { SKIPPED=$((SKIPPED + 1)); printf 'SKIP %s — %s\n' "$1" "$2"; }
+have_docker() { command -v docker >/dev/null 2>&1; }
 assert_eq() { # <name> <actual> <expected>
     if [ "$2" = "$3" ]; then
         ok "$1"
@@ -236,5 +239,42 @@ assert_eq test_stale_csv_cleaned_txt \
     "$([ -e "$d/result.txt" ] && echo 还在 || echo 已清理)" "已清理"
 
 # ---------------------------------------------------------------------------
-printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
+# 镜像：运行阶段必须带 curl / jq / crond，且有可执行的 publish.sh
+# 用 --entrypoint sh 覆盖镜像的 ENTRYPOINT，否则命令会被 entrypoint.sh 吃掉
+if have_docker; then
+    if docker build -q -t cfst:test . >"$TMP/build.log" 2>&1; then
+        rc=0
+        docker run --rm --entrypoint sh cfst:test \
+            -c 'command -v curl && command -v jq && command -v crond && test -x /opt/cfst/publish.sh' \
+            >"$TMP/it.log" 2>&1 || rc=$?
+        assert_eq test_image_has_runtime_deps "$rc" "0"
+    else
+        bad test_image_has_runtime_deps "镜像构建失败: $(tail -3 "$TMP/build.log" | tr '\n' ' ')"
+    fi
+else
+    skip test_image_has_runtime_deps "本机没有 docker"
+fi
+
+# ---------------------------------------------------------------------------
+# 构建阶段必须看不到 .env（.dockerignore 真的挡住了 token，不进构建层与缓存）
+if have_docker; then
+    created_env=0
+    if [ ! -e "$REPO/.env" ]; then
+        touch "$REPO/.env" # 造一个假的，确保测的是忽略规则而不是「文件本来就没有」
+        created_env=1
+    fi
+    if docker build -q --target builder -t cfst-builder:test . >"$TMP/build2.log" 2>&1; then
+        rc=0
+        docker run --rm --entrypoint sh cfst-builder:test -c 'test ! -e /app/.env' >/dev/null 2>&1 || rc=$?
+        assert_eq test_builder_stage_has_no_env_file "$rc" "0"
+    else
+        bad test_builder_stage_has_no_env_file "构建阶段镜像失败: $(tail -3 "$TMP/build2.log" | tr '\n' ' ')"
+    fi
+    [ "$created_env" -eq 1 ] && rm -f "$REPO/.env"
+else
+    skip test_builder_stage_has_no_env_file "本机没有 docker"
+fi
+
+# ---------------------------------------------------------------------------
+printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIPPED"
 [ "$FAIL" -eq 0 ]
