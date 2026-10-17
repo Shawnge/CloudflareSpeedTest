@@ -52,6 +52,23 @@ push() {
         sh "$REPO/publish.sh" push "$1" >"$TMP/out" 2>"$TMP/err"
 }
 
+# 运行 entrypoint.sh。显式清空 GITHUB_TOKEN，保证这两个用例不联网、不发布。
+# <data_dir> <cfst_bin> <cron_schedule> <run_on_start> [额外参数...]
+entrypoint_run() {
+    d=$1
+    b=$2
+    c=$3
+    r=$4
+    shift 4
+    env DATA_DIR="$d" \
+        CFST_BIN="$b" \
+        PUBLISH_SH="$REPO/publish.sh" \
+        CRON_SCHEDULE="$c" \
+        RUN_ON_START="$r" \
+        GITHUB_TOKEN= \
+        sh "$REPO/entrypoint.sh" "$@" >"$TMP/ep_out" 2>"$TMP/ep_err"
+}
+
 # ---------------------------------------------------------------------------
 # 过滤 + 格式：只保留 REGIONS 成员，N/A 与无关地区丢弃，按 REGIONS 顺序输出
 d=$(newdir basic)
@@ -163,6 +180,60 @@ push "$d/x.txt" dummy 1 http://127.0.0.1:1 || rc=$?
 assert_eq test_dry_run_exit_code "$rc" "0"
 assert_contains test_dry_run_prints_branch "$(cat "$TMP/out")" '"branch":"master"'
 assert_contains test_dry_run_prints_content "$(cat "$TMP/out")" '"content":"'
+
+# ---------------------------------------------------------------------------
+# entrypoint：单次运行，假 cfst 按 -o 写 CSV，entrypoint 负责转换出 txt
+# fixture 内联在本用例里（不跨任务共享），含一个不在 REGIONS 里的地区
+d=$(newdir ep)
+mkdir -p "$d"
+cat >"$TMP/fake-cfst-ok" <<'FAKEEOF'
+#!/bin/sh
+# 模拟 cfst：解析 -o，把结果写到那里。若调用方没传 -o，就落到当前目录（用例会失败）。
+out="result.csv"
+while [ $# -gt 0 ]; do
+    case "$1" in
+    -o) out=$2; shift 2 ;;
+    *) shift ;;
+    esac
+done
+{
+    printf 'IP 地址,已发送,已接收,丢包率,平均延迟,下载速度(MB/s),地区码\n'
+    printf '1.1.1.1,4,4,0.00,45.12,10.00,HKG\n'
+    printf '2.2.2.2,4,4,0.00,52.30,10.00,NRT\n'
+    printf '3.3.3.3,4,4,0.00,33.10,10.00,AMS\n'
+} >"$out"
+FAKEEOF
+chmod +x "$TMP/fake-cfst-ok"
+rc=0
+entrypoint_run "$d" "$TMP/fake-cfst-ok" "" "1" || rc=$?
+assert_eq test_entrypoint_single_run_exit_code "$rc" "0"
+expected='1.1.1.1#优选HKG-45.12m
+2.2.2.2#优选NRT-52.30m'
+assert_eq test_entrypoint_single_run_produces_txt "$(cat "$d/result.txt" 2>/dev/null)" "$expected"
+
+# ---------------------------------------------------------------------------
+# entrypoint：cfst 失败时，必须先把上一轮的旧 csv/txt 清掉，且绝不用旧数据发布
+d=$(newdir epstale)
+mkdir -p "$d"
+printf '旧csv数据\n' >"$d/result.csv"
+printf '旧txt结果\n' >"$d/result.txt"
+cat >"$TMP/fake-cfst-fail" <<'FAKEEOF'
+#!/bin/sh
+# 留个痕迹，证明 entrypoint 真的把 cfst 跑起来了（否则下面的退出码断言会因为
+# 「shell 在别处失败」而碰巧变绿，那样的绿没有任何信息量）
+: >"${DATA_DIR:-.}/fake-cfst-ran"
+exit 1
+FAKEEOF
+chmod +x "$TMP/fake-cfst-fail"
+rc=0
+entrypoint_run "$d" "$TMP/fake-cfst-fail" "" "1" || rc=$?
+assert_eq test_stale_csv_cleaned_fake_cfst_invoked \
+    "$([ -e "$d/fake-cfst-ran" ] && echo 跑了 || echo 没跑)" "跑了"
+assert_eq test_stale_csv_cleaned_exit_code "$rc" "1"
+assert_eq test_stale_csv_cleaned_csv \
+    "$([ -e "$d/result.csv" ] && echo 还在 || echo 已清理)" "已清理"
+assert_eq test_stale_csv_cleaned_txt \
+    "$([ -e "$d/result.txt" ] && echo 还在 || echo 已清理)" "已清理"
 
 # ---------------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
