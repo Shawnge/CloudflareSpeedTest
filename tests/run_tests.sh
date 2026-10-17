@@ -55,21 +55,44 @@ push() {
         sh "$REPO/publish.sh" push "$1" >"$TMP/out" 2>"$TMP/err"
 }
 
-# 运行 entrypoint.sh。显式清空 GITHUB_TOKEN，保证这两个用例不联网、不发布。
-# <data_dir> <cfst_bin> <cron_schedule> <run_on_start> [额外参数...]
+# 运行 entrypoint.sh。显式清空 GITHUB_TOKEN，保证这些用例不联网、不发布。
+# <data_dir> <cfst_bin> <cron_schedule> <run_on_start> <cfst_url> [额外参数...]
 entrypoint_run() {
     d=$1
     b=$2
     c=$3
     r=$4
-    shift 4
+    u=$5
+    shift 5
     env DATA_DIR="$d" \
         CFST_BIN="$b" \
         PUBLISH_SH="$REPO/publish.sh" \
         CRON_SCHEDULE="$c" \
         RUN_ON_START="$r" \
+        CFST_URL="$u" \
         GITHUB_TOKEN= \
         sh "$REPO/entrypoint.sh" "$@" >"$TMP/ep_out" 2>"$TMP/ep_err"
+}
+
+# 假 cfst：把收到的参数原样记到 $DATA_DIR/cfst-args.txt，并写一份最小 CSV
+make_args_recording_cfst() {
+    cat >"$TMP/fake-cfst-args" <<'FAKEEOF'
+#!/bin/sh
+# 必须在解析之前记录：下面的 while/shift 会把位置参数吃光，之后再 $* 就是空的了
+printf '%s\n' "$*" >"${DATA_DIR:-.}/cfst-args.txt"
+out=result.csv
+while [ $# -gt 0 ]; do
+    case "$1" in
+    -o) out=$2; shift 2 ;;
+    *) shift ;;
+    esac
+done
+{
+    printf 'IP 地址,已发送,已接收,丢包率,平均延迟,下载速度(MB/s),地区码\n'
+    printf '1.1.1.1,4,4,0.00,45.12,10.00,HKG\n'
+} >"$out"
+FAKEEOF
+    chmod +x "$TMP/fake-cfst-args"
 }
 
 # ---------------------------------------------------------------------------
@@ -208,7 +231,7 @@ done
 FAKEEOF
 chmod +x "$TMP/fake-cfst-ok"
 rc=0
-entrypoint_run "$d" "$TMP/fake-cfst-ok" "" "1" || rc=$?
+entrypoint_run "$d" "$TMP/fake-cfst-ok" "" "1" "" || rc=$?
 assert_eq test_entrypoint_single_run_exit_code "$rc" "0"
 expected='1.1.1.1#优选HKG-45.12m
 2.2.2.2#优选NRT-52.30m'
@@ -229,7 +252,7 @@ exit 1
 FAKEEOF
 chmod +x "$TMP/fake-cfst-fail"
 rc=0
-entrypoint_run "$d" "$TMP/fake-cfst-fail" "" "1" || rc=$?
+entrypoint_run "$d" "$TMP/fake-cfst-fail" "" "1" "" || rc=$?
 assert_eq test_stale_csv_cleaned_fake_cfst_invoked \
     "$([ -e "$d/fake-cfst-ran" ] && echo 跑了 || echo 没跑)" "跑了"
 assert_eq test_stale_csv_cleaned_exit_code "$rc" "1"
@@ -237,6 +260,30 @@ assert_eq test_stale_csv_cleaned_csv \
     "$([ -e "$d/result.csv" ] && echo 还在 || echo 已清理)" "已清理"
 assert_eq test_stale_csv_cleaned_txt \
     "$([ -e "$d/result.txt" ] && echo 还在 || echo 已清理)" "已清理"
+
+# ---------------------------------------------------------------------------
+# CFST_URL：非空时必须作为 -url 传给 cfst（这是绕开 cf.xiu2.xyz 403 的正规开关）
+d=$(newdir epurl)
+mkdir -p "$d"
+make_args_recording_cfst
+rc=0
+entrypoint_run "$d" "$TMP/fake-cfst-args" "" "1" "https://example.test/probe?bytes=1000" || rc=$?
+assert_eq test_entrypoint_passes_url_exit_code "$rc" "0"
+assert_contains test_entrypoint_passes_url \
+    "$(cat "$d/cfst-args.txt" 2>/dev/null)" "-url https://example.test/probe?bytes=1000"
+
+# ---------------------------------------------------------------------------
+# 命令行已显式给了 -url 时，CFST_URL 不得再追加一个（两个 -url 会让 cfst 静默取后者）
+d=$(newdir epurl2)
+mkdir -p "$d"
+make_args_recording_cfst
+rc=0
+entrypoint_run "$d" "$TMP/fake-cfst-args" "" "1" "https://should.not.win/probe" \
+    -url "https://explicit.win/probe" || rc=$?
+assert_eq test_entrypoint_url_not_duplicated \
+    "$(grep -o -- '-url' "$d/cfst-args.txt" 2>/dev/null | wc -l | tr -d ' ')" "1"
+assert_contains test_entrypoint_url_explicit_wins \
+    "$(cat "$d/cfst-args.txt" 2>/dev/null)" "-url https://explicit.win/probe"
 
 # ---------------------------------------------------------------------------
 # 镜像：运行阶段必须带 curl / jq / crond，且有可执行的 publish.sh

@@ -14,6 +14,9 @@
 #   CRON_SCHEDULE  5 段 cron 表达式；默认为每天 4 点；置为空串表示单次运行
 #   RUN_ON_START   1 = 启动时先跑一轮（默认 1）
 #   CFST_ARGS      追加给 cfst 的参数（命令行的参数也会被追加）
+#   CFST_URL       非空时作为 -url 传给 cfst，覆盖它的内置测速地址
+#                  （内置的 https://cf.xiu2.xyz/url 在部分网络会返回 403，
+#                   后果是所有下载速度 0.00、地区码全是 N/A、结果为空）
 #   其余（GITHUB_*、REGIONS、TOP_N、TZ 等）原样透传给 publish.sh
 set -eu
 
@@ -24,6 +27,7 @@ set -eu
 : "${CRON_SCHEDULE-0 4 * * *}"
 : "${RUN_ON_START:=1}"
 : "${CFST_ARGS:=}"
+: "${CFST_URL:=}"
 
 CFST_DIR=$(dirname "$CFST_BIN")
 RESULT_CSV="$DATA_DIR/result.csv"
@@ -39,6 +43,15 @@ for arg in "$@"; do
     esac
 done
 ARGS="$CFST_ARGS$ARGS"
+
+# 未显式指定 -url 时用 CFST_URL 覆盖 cfst 的内置测速地址。
+# 两个 -url 会让 cfst 静默取后者，所以命令行已给出时这里就不再追加。
+if [ -n "$CFST_URL" ]; then
+    case " $ARGS " in
+    *' -url '*) : ;;
+    *) ARGS="$ARGS -url $CFST_URL" ;;
+    esac
+fi
 
 # 未显式指定 -o 时补上固定输出路径。
 # 必须是固定名（不能用时间戳），因为下游 publish.sh 只认 $DATA_DIR/result.csv。
@@ -132,7 +145,7 @@ add_env() { # <变量名>
     fi
 }
 for name in DATA_DIR CFST_BIN PUBLISH_SH REGIONS TOP_N GITHUB_TOKEN GITHUB_REPO \
-    GITHUB_BRANCH RESULT_PATH GITHUB_API_BASE PUBLISH_DRY_RUN TZ; do
+    GITHUB_BRANCH RESULT_PATH GITHUB_API_BASE PUBLISH_DRY_RUN CFST_URL TZ; do
     add_env "$name"
 done
 

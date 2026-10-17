@@ -33,6 +33,16 @@ services:
       # 时区，决定 cron 在本地几点触发
       TZ: ${TZ:-Asia/Shanghai}
 
+      # cfst 的下载测速地址。留空则用 cfst 内置的 https://cf.xiu2.xyz/url。
+      # 该内置地址在部分网络会返回 HTTP 403，症状是所有下载速度 0.00、地区码全是 N/A、
+      # 最终结果为空。实测可用的替代（Cloudflare 官方，且响应头里带 colo，能正确填地区码）：
+      #   https://speed.cloudflare.com/__down?bytes=200000000
+      CFST_URL: ${CFST_URL:-}
+
+      # 仅用于验证/调试：1 = 只转换并打印将要提交的 JSON，不发出任何请求，
+      # 因此不会写远端。确认无误后设回 0（或删除本行）。
+      PUBLISH_DRY_RUN: ${PUBLISH_DRY_RUN:-0}
+
     # 传给 cfst 的测速参数。常用：
     #   -tl 200   延迟测速 IP 数量        -sl 50   下载速度下限(MB/s)
     #   -dn 20    下载测速 IP 数量        -dd      禁用下载测速（注意：会让地区码全变成 N/A）
