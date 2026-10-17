@@ -8,12 +8,37 @@
 # 环境变量（默认值见下）：
 #   REGIONS          保留的地区码，逗号分隔，顺序即输出顺序
 #   TOP_N            每个地区保留延迟最低的条数
+#   GITHUB_TOKEN     发布用的 token（为空则只测速不发布）
+#   GITHUB_REPO      目标仓库 owner/repo
+#   GITHUB_BRANCH    目标分支
+#   RESULT_PATH      结果文件在仓库内的路径
+#   GITHUB_API_BASE  API 根地址（仅测试用，指向假地址即可离线验证失败路径）
+#   PUBLISH_DRY_RUN  1 = 只打印将要提交的内容，不发任何请求（仅测试用）
+#
+# 安全：token 只经 Authorization 请求头传递，绝不打印、绝不写入文件、绝不进命令行参数。
 set -eu
 
 : "${REGIONS:=HKG,NRT,SIN,SJC,LAX}"
 : "${TOP_N:=8}"
+: "${GITHUB_TOKEN:=}"
+: "${GITHUB_REPO:=Shawnge/CloudflareSpeedTest}"
+: "${GITHUB_BRANCH:=master}"
+: "${RESULT_PATH:=result/result.txt}"
+: "${GITHUB_API_BASE:=https://api.github.com}"
+: "${PUBLISH_DRY_RUN:=0}"
 
 TAB=$(printf '\t')
+CURL_TIMEOUTS='--connect-timeout 10 --max-time 60'
+
+usage() {
+    echo "用法: publish.sh $1" >&2
+    exit 2
+}
+
+fail() {
+    echo "[publish] 发布失败: $1" >&2
+    return 1
+}
 
 # convert <csv> <out.txt>
 #
@@ -49,16 +74,117 @@ convert() {
     fi
 }
 
+# 组装 Contents API 的 body。<sha> 为空表示「新建文件」。
+# content 必须是 base64；base64 的输出在 BSD 上会折行，故一律 tr 掉换行。
+build_payload() { # <txt> <sha 或空>
+    base=$(jq -c -n \
+        --arg m "chore: update result.txt ($(date '+%F %T'))" \
+        --arg c "$(base64 <"$1" | tr -d '\n')" \
+        --arg b "$GITHUB_BRANCH" \
+        '{message: $m, content: $c, branch: $b}')
+    if [ -n "$2" ]; then
+        printf '%s' "$base" | jq -c --arg s "$2" '. + {sha: $s}'
+    else
+        printf '%s' "$base"
+    fi
+}
+
+# 拆出 curl 的响应：最后一行是 http_code，其余是 body
+resp_code() { printf '%s' "$1" | tail -n1; }
+resp_body() { printf '%s' "$1" | sed '$d'; }
+
+# 读取现有文件的 blob sha。输出空串表示文件还不存在（走创建）。
+fetch_sha() {
+    resp=$(curl -sS $CURL_TIMEOUTS -w '\n%{http_code}' \
+        -H "Authorization: Bearer $GITHUB_TOKEN" \
+        -H "Accept: application/vnd.github+json" \
+        "$url?ref=$GITHUB_BRANCH" 2>/dev/null || true)
+    code=$(resp_code "$resp")
+    body=$(resp_body "$resp")
+    case "$code" in
+    200) printf '%s' "$body" | jq -r '.sha // empty' ;;
+    404) : ;;
+    000 | '') fail "无法连接 $GITHUB_API_BASE" ;;
+    *) fail "读取现有文件失败: HTTP $code $(printf '%.500s' "$body")" ;;
+    esac
+}
+
+# push <txt>
+push() {
+    txt=$1
+    url="$GITHUB_API_BASE/repos/$GITHUB_REPO/contents/$RESULT_PATH"
+
+    # 守卫 1：结果为空 -> 绝不推送，保住远端上一版的好结果
+    if [ ! -s "$txt" ]; then
+        echo "[publish] WARN 结果为空，跳过发布" >&2
+        return 0
+    fi
+
+    # 守卫 2：没有 token -> 只测速不发布
+    if [ -z "$GITHUB_TOKEN" ]; then
+        echo "[publish] WARN 未配置 GITHUB_TOKEN，跳过发布" >&2
+        return 0
+    fi
+
+    if [ "$PUBLISH_DRY_RUN" = "1" ]; then
+        echo "[publish] DRY-RUN：不会发出任何请求"
+        echo "[publish] 目标 PUT $url"
+        echo "[publish] body $(build_payload "$txt" "")"
+        return 0
+    fi
+
+    sha=$(fetch_sha)
+    if [ -n "$sha" ]; then
+        echo "[publish] 目标已存在，将覆盖更新（sha=$sha）"
+    else
+        echo "[publish] 目标不存在，将新建"
+    fi
+
+    # PUT。409/422 通常是 sha 过期（例如同时在网页上改过），重取一次 sha 再试一次。
+    attempt=1
+    while :; do
+        payload=$(build_payload "$txt" "$sha")
+        resp=$(curl -sS $CURL_TIMEOUTS -X PUT -w '\n%{http_code}' \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -d "$payload" "$url" 2>/dev/null || true)
+        code=$(resp_code "$resp")
+        body=$(resp_body "$resp")
+
+        case "$code" in
+        2*)
+            echo "[publish] 已发布到 $GITHUB_REPO@$GITHUB_BRANCH:$RESULT_PATH"
+            return 0
+            ;;
+        409 | 422)
+            if [ "$attempt" -eq 1 ]; then
+                echo "[publish] sha 过期，重新读取后重试一次" >&2
+                sha=$(fetch_sha)
+                attempt=2
+                continue
+            fi
+            fail "HTTP $code $(printf '%.500s' "$body")"
+            ;;
+        *)
+            fail "HTTP $code $(printf '%.500s' "$body")"
+            ;;
+        esac
+    done
+}
+
 case "${1:-}" in
 convert)
-    [ $# -eq 3 ] || {
-        echo "用法: publish.sh convert <csv> <out.txt>" >&2
-        exit 2
-    }
+    [ $# -eq 3 ] || usage "convert <csv> <out.txt>"
     convert "$2" "$3"
     ;;
-*)
-    echo "用法: publish.sh {convert|push|all} ..." >&2
-    exit 2
+push)
+    [ $# -eq 2 ] || usage "push <txt>"
+    push "$2"
     ;;
+all)
+    [ $# -eq 3 ] || usage "all <csv> <out.txt>"
+    convert "$2" "$3"
+    push "$3"
+    ;;
+*) usage "{convert|push|all} ..." ;;
 esac

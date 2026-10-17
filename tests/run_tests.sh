@@ -18,6 +18,12 @@ assert_eq() { # <name> <actual> <expected>
         bad "$1" "expected [$(printf '%s' "$3")] got [$(printf '%s' "$2")]"
     fi
 }
+assert_contains() { # <name> <haystack> <needle>
+    case "$2" in
+    *"$3"*) ok "$1" ;;
+    *) bad "$1" "未包含 [$3]，实际: [$(printf '%s' "$2")]" ;;
+    esac
+}
 
 # 调用 publish.sh convert。REGIONS/TOP_N 用 env 显式传入，避免用例之间互相串味。
 # 传空串时 publish.sh 内部的 ${VAR:=默认值} 会补上默认值。
@@ -32,6 +38,19 @@ row() { # <csv> <ip> <平均延迟> <地区码>
     printf '%s,4,4,0.00,%s,10.00,%s\n' "$2" "$3" "$4" >>"$1"
 }
 newdir() { mkdir -p "$TMP/$1"; printf '%s' "$TMP/$1"; }
+
+# 调用 publish.sh push。所有变量都显式经 env 传入，避免用例之间串味，也避免测试脚本自身被污染。
+# <txt> <token> <dry_run> <api_base> [branch] [repo] [path]
+# stdout -> $TMP/out，stderr -> $TMP/err
+push() {
+    env GITHUB_TOKEN="$2" \
+        PUBLISH_DRY_RUN="$3" \
+        GITHUB_API_BASE="$4" \
+        GITHUB_BRANCH="${5:-master}" \
+        GITHUB_REPO="${6:-Shawnge/CloudflareSpeedTest}" \
+        RESULT_PATH="${7:-result/result.txt}" \
+        sh "$REPO/publish.sh" push "$1" >"$TMP/out" 2>"$TMP/err"
+}
 
 # ---------------------------------------------------------------------------
 # 过滤 + 格式：只保留 REGIONS 成员，N/A 与无关地区丢弃，按 REGIONS 顺序输出
@@ -115,6 +134,35 @@ rc=0
 convert "$d/in.csv" "$d/out.txt" "" "" || rc=$?
 assert_eq test_non_iata_colo_dropped "$(cat "$d/out.txt")" '5.5.5.5#优选HKG-55.00m'
 assert_eq test_non_iata_colo_dropped_exit_code "$rc" "0"
+
+# ---------------------------------------------------------------------------
+# 空结果守卫：0 字节 -> 警告 + 退出 0，绝不发请求
+# （用一个拒绝连接的 api_base，若真发了请求就不可能还是 0）
+d=$(newdir pushempty)
+: >"$d/empty.txt"
+rc=0
+push "$d/empty.txt" dummy 1 http://127.0.0.1:1 || rc=$?
+assert_eq test_push_skips_when_empty_exit_code "$rc" "0"
+assert_contains test_push_skips_when_empty_warns "$(cat "$TMP/err")" "结果为空"
+
+# ---------------------------------------------------------------------------
+# API 不可达：记日志 + 返回失败（绝不静默、绝不崩）
+d=$(newdir pushfail)
+printf '1.1.1.1#优选HKG-45.12m\n' >"$d/x.txt"
+rc=0
+push "$d/x.txt" dummy 0 http://127.0.0.1:1 || rc=$?
+assert_eq test_push_reports_error_on_unreachable_api "$rc" "1"
+assert_contains test_push_reports_error_on_unreachable_api_log "$(cat "$TMP/err")" "发布失败"
+
+# ---------------------------------------------------------------------------
+# dry-run：地址不可达却退出 0，证明根本没发请求；同时要把将要提交的 JSON 打出来
+d=$(newdir dryrun)
+printf '1.1.1.1#优选HKG-45.12m\n' >"$d/x.txt"
+rc=0
+push "$d/x.txt" dummy 1 http://127.0.0.1:1 || rc=$?
+assert_eq test_dry_run_exit_code "$rc" "0"
+assert_contains test_dry_run_prints_branch "$(cat "$TMP/out")" '"branch":"master"'
+assert_contains test_dry_run_prints_content "$(cat "$TMP/out")" '"content":"'
 
 # ---------------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
