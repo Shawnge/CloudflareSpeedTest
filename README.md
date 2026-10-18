@@ -239,8 +239,13 @@ docker compose logs -f          # 看进度；测速本身要几分钟
 > 于是无限重复测速。只想跑一轮请用：
 > `docker compose run --rm -e CRON_SCHEDULE= cfst`
 
-产物落在宿主机 `./output/`：`result.csv`（cfst 原始输出）、`result.txt`（转换后要发布的内容）、`cfst.log`（定时任务的日志）。
-`./output/` 已在 `.gitignore` 内，不会污染仓库工作区。
+产物写在容器内 `/data/`（命名卷 `cfst-output`，实际卷名带项目名前缀）：`result.csv`（cfst 原始输出）、`result.txt`（转换后要发布的内容）、`cfst.log`（定时任务的日志）。
+
+> [!NOTE]
+> 用**命名卷**而不是 `./output` 绑定挂载，是因为 Portainer 用 Git / Agent 部署 stack 时，相对路径会被解析成宿主机的 `/data/compose/<id>/output`，Docker 守护进程找不到它，部署会直接失败（`Bind mount failed: ... does not exist`）。
+> 查看产物：Portainer → **Volumes** → 选中 `cfst-output`（带栈名前缀）→ **Browse**；
+> 或命令行：`docker run --rm -v <前缀>_cfst-output:/d alpine ls -l /d`。
+> 在本机用命令行跑、想要产物直接落到仓库 `./output/` 时，把 compose 里那行换回 `- ./output:/data` 即可。
 
 ### 4. 给客户端填的地址
 

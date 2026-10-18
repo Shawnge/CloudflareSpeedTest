@@ -17,9 +17,16 @@ services:
     image: cfst:latest
     container_name: cfst
 
-    # 结果文件写到容器内 /data，落到宿主 ./output（已在 .gitignore 里，不污染仓库工作区）
+    # 结果文件写到容器内 /data。这里刻意用**命名卷**而不是相对路径绑定挂载：
+    # Portainer 用 Git / Agent 部署 stack 时，compose 里的相对路径 ./output 会被解析成
+    # 宿主机的 /data/compose/<id>/output —— 那是 Portainer 自己的数据目录，Docker 守护进程
+    # 在宿主机上找不到它（仓库里有没有该目录都没用），于是部署直接失败：
+    #   Bind mount failed: '/data/compose/<id>/output' does not exist
+    # 命名卷由 Docker 自动创建，不依赖任何宿主路径，Portainer 与命令行都可用。
+    # 【本机想直接看到产物】把下面那行换成绑定挂载即可（需要 ./output 存在）：
+    #   - ./output:/data
     volumes:
-      - ./output:/data
+      - cfst-output:/data
 
     environment:
       # 【必须】GitHub 令牌：fine-grained PAT，只授权目标仓库，权限 Contents: Read and write。
@@ -73,3 +80,9 @@ services:
 
     # 定时模式下容器要常驻，异常退出自动拉起
     restart: unless-stopped
+
+# 结果卷。实际名称会被 compose 加上项目名前缀（Portainer 里就是「栈名_cfst-output」）。
+# 查看内容：Portainer → Volumes → 选中它 → Browse；
+# 或命令行：docker run --rm -v <前缀>_cfst-output:/d alpine ls -l /d
+volumes:
+  cfst-output:
