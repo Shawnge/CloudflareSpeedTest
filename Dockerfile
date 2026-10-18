@@ -1,6 +1,25 @@
 # 构建阶段：使用官方 Go 镜像编译
 FROM golang:1.22-alpine AS builder
 
+# 构建期代理：docker pull 走的是 Docker 守护进程的代理，但下面 RUN 里的 go build
+# 是构建容器内的独立进程，**不会**继承守护进程的代理，必须在这里显式透传。
+# 这里刻意用自定义参数名（BUILD_*）而不是 HTTP_PROXY 这类 Docker 预定义参数名，
+# 这样代理只在本构建阶段生效，不会波及运行阶段的 apk add 等（保持原有行为不变）。
+# 注意：容器的 127.0.0.1 是容器自己，这里要填「容器能访问到宿主机代理」的地址，
+# 例如 docker0 网关 http://172.17.0.1:7890 或宿主机内网 IP —— 不要填 127.0.0.1。
+ARG BUILD_HTTP_PROXY
+ARG BUILD_HTTPS_PROXY
+ARG BUILD_NO_PROXY
+ENV HTTP_PROXY=${BUILD_HTTP_PROXY} \
+    HTTPS_PROXY=${BUILD_HTTPS_PROXY} \
+    NO_PROXY=${BUILD_NO_PROXY}
+
+# 依赖下载源，可用 --build-arg GOPROXY=... 覆盖：
+#   默认走国内镜像（国内直连即可用），失败再回退 direct；
+#   若想强制「直连 GitHub 并走上面的代理」，传 GOPROXY=direct。
+ARG GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GOPROXY}
+
 WORKDIR /app
 COPY . .
 

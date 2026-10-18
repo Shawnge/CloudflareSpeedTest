@@ -3,6 +3,17 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # 构建期代理：docker pull 走守护进程的代理，而 Dockerfile 里的 go build
+      # 跑在构建容器内，不会继承它 —— 所以必须在这里单独透传。
+      # 【重要】容器的 127.0.0.1 指容器自己，这里要填容器能访问到宿主代理的地址，
+      # 例如 http://172.17.0.1:7890（docker0 网关）或宿主机内网 IP，别填 127.0.0.1。
+      # 不设置则不传代理（保持原行为）。在 Portainer 里请配到 Stack 的环境变量中。
+      args:
+        BUILD_HTTP_PROXY: ${BUILD_HTTP_PROXY:-}
+        BUILD_HTTPS_PROXY: ${BUILD_HTTPS_PROXY:-}
+        BUILD_NO_PROXY: ${BUILD_NO_PROXY:-}
+        # 依赖源：默认国内镜像优先、失败回退直连；填 direct 可强制走 GitHub（需上面的代理生效）
+        GOPROXY: ${BUILD_GOPROXY:-https://goproxy.cn,direct}
     image: cfst:latest
     container_name: cfst
 

@@ -192,6 +192,18 @@ EOF
 | `CFST_ARGS` | 空 | 追加给 cfst 的参数（与 compose 的 `command:` 合并） |
 | `CFST_URL` | 空（用 cfst 内置地址） | cfst 的下载测速地址，等价于 `-url`；选法见 §5 |
 | `PUBLISH_DRY_RUN` | `0` | 设 `1` = 只转换并打印将要提交的内容，**不发任何请求** |
+| `BUILD_HTTPS_PROXY` | 空（不走代理） | **仅构建期**：透传给构建容器里的 `go build` 下载依赖用 |
+| `BUILD_GOPROXY` | `https://goproxy.cn,direct` | **仅构建期**：依赖下载源；填 `direct` = 强制直连 GitHub（需上面的代理生效） |
+
+> [!IMPORTANT]
+> **`BUILD_*` 是构建期（`docker compose build`）变量，不是运行时变量。** `docker pull` 走的是 Docker
+> **守护进程**的代理，而 `Dockerfile` 里的 `go build` 跑在**构建容器内**、**不继承**守护进程的代理 ——
+> 所以会出现「镜像能拉下来、构建却失败在下载依赖」，报错形如：
+> `process "/bin/sh -c CGO_ENABLED=0 GOOS=linux go build -ldflags=\"-s -w\" -o cfst ." did not complete successfully: exit code: 1`。
+> 在 Portainer 里请把代理配到 **Stack 的环境变量**（不是容器环境变量）：
+> `BUILD_HTTPS_PROXY=http://172.17.0.1:7890`、`BUILD_HTTP_PROXY=http://172.17.0.1:7890`。
+> **不要填 `127.0.0.1`** —— 构建容器里的 `127.0.0.1` 指容器自己，要用 docker0 网关（`172.17.0.1`）
+> 或宿主机内网 IP。另外默认的 `GOPROXY` 已优先走国内 `goproxy.cn` 镜像，多数国内服务器**不配代理也能构建**。
 
 cfst 自身的测速参数通过 compose 的 `command:` 传递，默认 `["-tl","200","-dn","20"]`
 （`-tl` 平均延迟上限 ms、`-dn` 下载测速数量）。
@@ -245,6 +257,7 @@ https://raw.githubusercontent.com/Shawnge/CloudflareSpeedTest/master/result/resu
 
 | 现象 | 原因与处理 |
 |---|---|
+| **构建/部署**报 `go build ... did not complete successfully: exit code: 1` | 构建期下载依赖失败（**不是代码问题**，本仓库源码可正常编译）。按 §2 透传构建期代理：`BUILD_HTTPS_PROXY` / `BUILD_HTTP_PROXY`，地址要用**容器可达**的 `http://172.17.0.1:7890`，不能填 `127.0.0.1` |
 | 日志出现 `发布失败: HTTP 401` | token 过期或被撤销。换新 token 后 `docker compose up -d --force-recreate`。**容器不会因此死掉**，远端仍保留上一版好结果 |
 | 日志出现 `结果为空，跳过发布` | 本轮没测出可用结果，远端保持上一版。原因见下面几行 |
 | **每轮**都是「结果为空」（地区码却正常） | 检查 `command:` 里有没有设 `-sl`（下载速度下限）。cfst 在**没有任何 IP 达到该速度**时会输出 0 条结果，**连 `result.csv` 都不创建**，于是每天都静默不发布。默认我们**不设 `-sl`**就是这个原因；如果你自己加了，按实际带宽调低或去掉（本方案的筛选规则只按延迟，不需要速度下限） |
