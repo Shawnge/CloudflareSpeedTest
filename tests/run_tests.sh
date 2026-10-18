@@ -32,6 +32,12 @@ assert_contains() { # <name> <haystack> <needle>
     *) bad "$1" "未包含 [$3]，实际: [$(printf '%s' "$2")]" ;;
     esac
 }
+assert_not_contains() { # <name> <haystack> <needle>
+    case "$2" in
+    *"$3"*) bad "$1" "不应包含 [$3]，实际: [$(printf '%s' "$2")]" ;;
+    *) ok "$1" ;;
+    esac
+}
 
 # 调用 publish.sh convert。REGIONS/TOP_N 用 env 显式传入，避免用例之间互相串味。
 # 传空串时 publish.sh 内部的 ${VAR:=默认值} 会补上默认值。
@@ -129,12 +135,33 @@ entrypoint_run() {
     r=$4
     u=$5
     shift 5
+    entrypoint_run_cfst_env "$d" "$b" "$c" "$r" "$u" "" "" "" "$@"
+}
+
+# 同上，但显式给出 CFST_TL/CFST_DN/CFST_SL。
+# 用参数而不是 `CFST_TL=150 entrypoint_run ...` 前缀：POSIX 对「函数调用前缀赋值」
+# 是否持久规定不一（bash 会留下、dash/ash 会还原），会串味到后续用例。
+# <data_dir> <cfst_bin> <cron_schedule> <run_on_start> <cfst_url> <CFST_TL> <CFST_DN> <CFST_SL> [额外参数...]
+entrypoint_run_cfst_env() {
+    d=$1
+    b=$2
+    c=$3
+    r=$4
+    u=$5
+    tl=$6
+    dn=$7
+    sl=$8
+    shift 8
     env DATA_DIR="$d" \
         CFST_BIN="$b" \
         PUBLISH_SH="$REPO/publish.sh" \
         CRON_SCHEDULE="$c" \
         RUN_ON_START="$r" \
         CFST_URL="$u" \
+        CFST_TL="$tl" \
+        CFST_DN="$dn" \
+        CFST_SL="$sl" \
+        CFST_ARGS= \
         GITHUB_TOKEN= \
         sh "$REPO/entrypoint.sh" "$@" >"$TMP/ep_out" 2>"$TMP/ep_err"
 }
@@ -405,6 +432,49 @@ assert_eq test_entrypoint_url_not_duplicated \
     "$(grep -o -- '-url' "$d/cfst-args.txt" 2>/dev/null | wc -l | tr -d ' ')" "1"
 assert_contains test_entrypoint_url_explicit_wins \
     "$(cat "$d/cfst-args.txt" 2>/dev/null)" "-url https://explicit.win/probe"
+
+# ---------------------------------------------------------------------------
+# CFST_TL / CFST_DN / CFST_SL：三个测速阈值可由环境变量注入，等价于 -tl/-dn/-sl
+d=$(newdir cfstenv)
+mkdir -p "$d"
+make_args_recording_cfst
+rc=0
+entrypoint_run_cfst_env "$d" "$TMP/fake-cfst-args" "" "1" "" "150" "30" "5" || rc=$?
+args=$(cat "$d/cfst-args.txt" 2>/dev/null)
+assert_eq test_cfst_env_exit_code "$rc" "0"
+assert_contains test_cfst_tl_env_passed "$args" "-tl 150"
+assert_contains test_cfst_dn_env_passed "$args" "-dn 30"
+assert_contains test_cfst_sl_env_passed "$args" "-sl 5"
+
+# ---------------------------------------------------------------------------
+# 留空 = 完全不传该参数。CFST_SL 默认就该是空的：本方案按延迟筛选，不需要速度门槛，
+# 而 -sl 高于实际带宽时 cfst 会输出 0 条结果、连 result.csv 都不创建。
+d=$(newdir cfstenvempty)
+mkdir -p "$d"
+make_args_recording_cfst
+rc=0
+entrypoint_run_cfst_env "$d" "$TMP/fake-cfst-args" "" "1" "" "" "" "" || rc=$?
+args=$(cat "$d/cfst-args.txt" 2>/dev/null)
+assert_eq test_cfst_env_empty_exit_code "$rc" "0"
+assert_not_contains test_cfst_tl_empty_not_passed "$args" "-tl"
+assert_not_contains test_cfst_dn_empty_not_passed "$args" "-dn"
+assert_not_contains test_cfst_sl_empty_not_passed "$args" "-sl"
+
+# ---------------------------------------------------------------------------
+# 环境变量与命令行撞车：以命令行为准（沿用 CFST_URL 的既有约定，保住
+# `docker compose run --rm cfst -tl 500` 这种一次性试参数的用法），但必须告警，
+# 否则在 .env 里改了值却不生效，会变成无声的困惑。
+d=$(newdir cfstenvwin)
+mkdir -p "$d"
+make_args_recording_cfst
+rc=0
+entrypoint_run_cfst_env "$d" "$TMP/fake-cfst-args" "" "1" "" "150" "30" "5" -tl 300 || rc=$?
+args=$(cat "$d/cfst-args.txt" 2>/dev/null)
+assert_eq test_cfst_env_command_line_wins_exit_code "$rc" "0"
+assert_contains test_cfst_env_command_line_wins "$args" "-tl 300"
+assert_not_contains test_cfst_env_command_line_env_not_applied "$args" "-tl 150"
+assert_contains test_cfst_env_command_line_wins_warns "$(cat "$TMP/ep_err")" "WARN"
+assert_contains test_cfst_env_command_line_wins_warns_name "$(cat "$TMP/ep_err")" "CFST_TL"
 
 # ---------------------------------------------------------------------------
 # 镜像：运行阶段必须带 curl / jq / crond，且有可执行的 publish.sh

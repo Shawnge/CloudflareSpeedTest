@@ -61,22 +61,34 @@ services:
       #
       # 内置地址不保证可用（cfst README 原话「默认地址不保证可用性，建议自建」）。
       # 症状：地区码全是 N/A、下载速度全是 0.00、最终结果为空。
-      # 排查：给 command 加上 "-debug" 看真实报错；换成一个你自建在 CF 上的大文件地址。
+      # 排查：用 CFST_ARGS=-debug（或 docker compose run --rm -e CRON_SCHEDULE= cfst -debug）
+      # 看真实报错；换成一个你自建在 CF 上的大文件地址。
       CFST_URL: ${CFST_URL:-}
 
       # 仅用于验证/调试：1 = 只转换并打印将要提交的 JSON，不发出任何请求，
       # 因此不会写远端。确认无误后设回 0（或删除本行）。
       PUBLISH_DRY_RUN: ${PUBLISH_DRY_RUN:-0}
 
-    # 传给 cfst 的测速参数。常用（措辞照 cfst README）：
-    #   -tl 200   平均延迟上限(ms)      -dn 20    下载测速数量
-    #   -dd       禁用下载测速（注意：会让地区码全变成 N/A，本方案不能这么用）
-    #
-    # 这里**故意不设 -sl**（下载速度下限）。本方案的筛选规则是「每个地区取延迟最低的 N 个」，
-    # 并不需要速度门槛；而 -sl 一旦高于实际带宽，cfst 会输出 0 条结果、连 result.csv 都不创建，
-    # 于是每天静默不发布、远端永远停在旧内容（只在日志里留一句「结果为空，跳过发布」）。
-    # 确实想按速度过滤时再加，例如 "-sl","5"。
-    command: ["-tl", "200", "-dn", "20"]
+      # 传给 cfst 的测速参数（等价于 -tl/-dn/-sl）。留空 = 不传该参数。
+      #   CFST_TL  平均延迟上限(ms)   CFST_DN  下载测速数量   CFST_SL  下载速度下限(MB/s)
+      #
+      # CFST_SL 默认 20，即**默认带一个下载速度门槛**；如果线路达不到，cfst 会输出 0 条结果、
+      # 连 result.csv 都不创建，于是每天静默不发布（日志里只有一句「结果为空」）。
+      # 本方案按延迟筛选、不需要速度门槛，想关掉就把 .env 里设成空值：CFST_SL=
+      CFST_TL: ${CFST_TL:-200}
+      CFST_DN: ${CFST_DN:-20}
+      CFST_SL: ${CFST_SL:-20}
+
+      # cfst 其它参数的兜底入口：这里写的内容会拼到 cfst 命令行前面。
+      # 单个参数优先用上面三个变量；要传别的参数（如 -p 线程数、-t 次数）再用这个。
+      # 注意：与上面三个变量重复时以上面三个为准（entrypoint 会告警）。
+      # 例：CFST_ARGS: ${CFST_ARGS:--p 4}
+      CFST_ARGS: ${CFST_ARGS:-}
+
+    # 这里**故意不写 command**：测速参数一律走上面的环境变量，
+    # 避免「.env 里改了 CFST_TL 却被 command 里的 -tl 无声压掉」。
+    # 想临时试参数（跑一轮，命令行的参数优先）：
+    #   docker compose run --rm -e CRON_SCHEDULE= cfst -tl 500 -dn 5
 
     # 定时模式下容器要常驻，异常退出自动拉起
     restart: unless-stopped

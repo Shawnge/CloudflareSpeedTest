@@ -189,7 +189,10 @@ EOF
 | `CRON_SCHEDULE` | `0 4 * * *` | 5 段 cron 表达式；**留成空值 = 只跑一轮后退出**，但要配 `docker compose run --rm`（见 §3 告警） |
 | `RUN_ON_START` | `1` | 容器启动时是否先立即跑一轮 |
 | `TZ` | `Asia/Shanghai` | 影响 cron 的触发时刻 |
-| `CFST_ARGS` | 空 | 追加给 cfst 的参数（与 compose 的 `command:` 合并） |
+| `CFST_TL` | `200` | 平均延迟上限(ms)，等价于 `-tl`；**留空 = 不传该参数** |
+| `CFST_DN` | `20` | 下载测速数量，等价于 `-dn`；留空 = 不传 |
+| `CFST_SL` | `20` | 下载速度下限(MB/s)，等价于 `-sl`；**设成空值 = 不传该参数**（见下方 TIP） |
+| `CFST_ARGS` | 空 | 兜底入口：其它 cfst 参数的原文，会拼到命令行最前面（如 `-p 4`） |
 | `CFST_URL` | 空（用 cfst 内置地址） | cfst 的下载测速地址，等价于 `-url`；选法见 §5 |
 | `PUBLISH_DRY_RUN` | `0` | 设 `1` = 只转换并打印将要提交的内容，**不发任何请求** |
 | `BUILD_HTTPS_PROXY` | 空（不走代理） | **仅构建期**：透传给构建容器里的 `go build` 下载依赖用 |
@@ -205,13 +208,24 @@ EOF
 > **不要填 `127.0.0.1`** —— 构建容器里的 `127.0.0.1` 指容器自己，要用 docker0 网关（`172.17.0.1`）
 > 或宿主机内网 IP。另外默认的 `GOPROXY` 已优先走国内 `goproxy.cn` 镜像，多数国内服务器**不配代理也能构建**。
 
-cfst 自身的测速参数通过 compose 的 `command:` 传递，默认 `["-tl","200","-dn","20"]`
-（`-tl` 平均延迟上限 ms、`-dn` 下载测速数量）。
+cfst 自身的测速参数一律通过上面的 `CFST_TL` / `CFST_DN` / `CFST_SL` 环境变量传递
+（compose 里**故意不写 `command:`**，否则 `.env` 里改的值会被 `command:` 里的同名选项无声压掉）。
+想让某一轮临时用别的值，直接写在命令行上：
+
+```bash
+docker compose run --rm -e CRON_SCHEDULE= cfst -tl 500 -dn 5
+```
+
+两处都给了同一个选项时**以命令行为准**，同时日志里会打一条 `WARN` 指出被忽略的环境变量值 ——
+不会出现「改了 `.env` 却没生效」的无声困惑。
 
 > [!TIP]
-> 默认**故意不设 `-sl`**（下载速度下限）。本方案的筛选规则是「每个地区取延迟最低的 N 个」，
-> 不需要速度门槛；而 `-sl` 一旦高于实际带宽，cfst 会输出 0 条结果、连 `result.csv` 都不创建，
-> 于是每天静默不发布、远端永远停在旧内容。确实想按速度过滤时再加（例如 `-sl 5`）。
+> `CFST_SL` 默认是 `20`（MB/s），也就是说**默认带一个下载速度门槛**：cfst 会一直测到凑够
+> `CFST_DN` 个速度达标的 IP，或把候选全测完为止。
+> **如果你的线路达不到 20 MB/s，这一门槛会让 cfst 输出 0 条结果、连 `result.csv` 都不创建**，
+> 于是每天都静默不发布、远端永远停在旧内容（日志里只有一句「结果为空，跳过发布」）。
+> 本方案的筛选规则本来就只按延迟，不需要速度门槛 —— 想关掉就把 `CFST_SL` 设成空值：
+> 在 `.env` 里写一行 `CFST_SL=` 即可。反过来，想更严格就调大（如 `CFST_SL=50`）。
 
 > `.env` 已同时写进 `.gitignore` 与 `.dockerignore`，既不会被提交，也不会被 `COPY . .` 烤进镜像层。
 
@@ -265,8 +279,8 @@ https://raw.githubusercontent.com/Shawnge/CloudflareSpeedTest/master/result/resu
 | **构建/部署**报 `go build ... did not complete successfully: exit code: 1` | 构建期下载依赖失败（**不是代码问题**，本仓库源码可正常编译）。按 §2 透传构建期代理：`BUILD_HTTPS_PROXY` / `BUILD_HTTP_PROXY`，地址要用**容器可达**的 `http://172.17.0.1:7890`，不能填 `127.0.0.1` |
 | 日志出现 `发布失败: HTTP 401` | token 过期或被撤销。换新 token 后 `docker compose up -d --force-recreate`。**容器不会因此死掉**，远端仍保留上一版好结果 |
 | 日志出现 `结果为空，跳过发布` | 本轮没测出可用结果，远端保持上一版。原因见下面几行 |
-| **每轮**都是「结果为空」（地区码却正常） | 检查 `command:` 里有没有设 `-sl`（下载速度下限）。cfst 在**没有任何 IP 达到该速度**时会输出 0 条结果，**连 `result.csv` 都不创建**，于是每天都静默不发布。默认我们**不设 `-sl`**就是这个原因；如果你自己加了，按实际带宽调低或去掉（本方案的筛选规则只按延迟，不需要速度下限） |
-| 地区码全是 `N/A`、下载速度全是 `0.00` | 下载测速没成功 → 拿不到地区码 → 被空结果守卫拦住。① 给 `command:` 加 `"-debug"` 看真实报错；② 确认没有加 `-dd`（禁用下载测速会导致地区码全为 `N/A`）；③ 换 `CFST_URL`（见下一行） |
+| **每轮**都是「结果为空」（地区码却正常） | 最可能是 `CFST_SL`（默认 `20` MB/s）高于你的实际带宽。cfst 在**没有任何 IP 达到该速度**时会输出 0 条结果，**连 `result.csv` 都不创建**，于是每天都静默不发布。把 `CFST_SL` 调低，或在 `.env` 里设成空值 `CFST_SL=` 彻底关掉（本方案的筛选规则只按延迟，不需要速度下限） |
+| 地区码全是 `N/A`、下载速度全是 `0.00` | 下载测速没成功 → 拿不到地区码 → 被空结果守卫拦住。① 加 `-debug` 看真实报错（`CFST_ARGS=-debug`，或 `docker compose run --rm -e CRON_SCHEDULE= cfst -debug`）；② 确认没有加 `-dd`（禁用下载测速会导致地区码全为 `N/A`）；③ 换 `CFST_URL`（见下一行） |
 | 想换测速地址 | `CFST_URL` 的域名必须由 **Cloudflare 边缘**提供服务：cfst 会拿 `ip.txt` 里的 IP 直接拨号、SNI/Host 用该域名，所以要用「正常挂在 CF 上的域名」下的大文件（可下载、>200MB、走 CF CDN）。**不要**填 `speed.cloudflare.com`——实测它不由任意 CF 边缘提供，拿 `ip.txt` 的 IP 连它会 TLS 握手失败（cfst 报 `下载测速失败 ... EOF`），地区码永远填不上 |
 | 定时没触发 | 检查 `TZ`；`docker compose exec cfst crontab -l` 可以看到实际装进容器的那一行 |
 | 想先试跑、不写远端 | `PUBLISH_DRY_RUN=1`（或 `docker compose run --rm -e PUBLISH_DRY_RUN=1 -e CRON_SCHEDULE= cfst`）先跑一轮看清要提交的内容 |

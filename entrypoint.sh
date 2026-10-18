@@ -17,6 +17,9 @@
 #   CFST_URL       非空时作为 -url 传给 cfst，覆盖它的内置测速地址
 #                  （内置的 https://cf.xiu2.xyz/url 在部分网络会返回 403，
 #                   后果是所有下载速度 0.00、地区码全是 N/A、结果为空）
+#   CFST_TL        平均延迟上限(ms)，非空时作为 -tl 传给 cfst
+#   CFST_DN        下载测速数量，非空时作为 -dn 传给 cfst
+#   CFST_SL        下载速度下限(MB/s)，非空时作为 -sl 传给 cfst；想关掉就设成空值
 #   其余（GITHUB_*、REGIONS、TOP_N、TZ 等）原样透传给 publish.sh
 set -eu
 
@@ -28,6 +31,12 @@ set -eu
 : "${RUN_ON_START:=1}"
 : "${CFST_ARGS:=}"
 : "${CFST_URL:=}"
+# 这三个留空 = 不传对应参数。CFST_SL 是由 compose 给了默认值 20 的（速度门槛）；
+# 线路达不到那个速度时 cfst 会输出 0 条结果、连 result.csv 都不创建，
+# 于是每天静默不发布，所以这一项想关掉就显式设成空值。
+: "${CFST_TL:=}"
+: "${CFST_DN:=}"
+: "${CFST_SL:=}"
 
 CFST_DIR=$(dirname "$CFST_BIN")
 RESULT_CSV="$DATA_DIR/result.csv"
@@ -52,6 +61,28 @@ if [ -n "$CFST_URL" ]; then
     *) ARGS="$ARGS -url $CFST_URL" ;;
     esac
 fi
+
+# 三个测速阈值同样可以用环境变量给（等价于 -tl/-dn/-sl）。留空 = 不传。
+# 参数里已经写了该选项时不再追加，并以显式参数为准 —— 与 -url 同一套约定，
+# 保住 `docker compose run --rm cfst -tl 500` 这种一次性试参数的用法；
+# 但两处都写了不同值时必须告警，否则「在 .env 里改了值却不生效」会完全无声。
+# <flag> <环境变量名> <值>
+add_cfst_opt() {
+    opt_flag=$1
+    opt_name=$2
+    opt_val=$3
+    [ -n "$opt_val" ] || return 0
+    case " $ARGS " in
+    *" $opt_flag "*)
+        echo "[entrypoint] WARN 参数里已经有 ${opt_flag}，忽略 ${opt_name}=${opt_val}（以显式参数为准）" >&2
+        ;;
+    *) ARGS="$ARGS $opt_flag $opt_val" ;;
+    esac
+}
+
+add_cfst_opt -tl CFST_TL "$CFST_TL"
+add_cfst_opt -dn CFST_DN "$CFST_DN"
+add_cfst_opt -sl CFST_SL "$CFST_SL"
 
 # 未显式指定 -o 时补上固定输出路径。
 # 必须是固定名（不能用时间戳），因为下游 publish.sh 只认 $DATA_DIR/result.csv。
