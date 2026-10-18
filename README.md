@@ -186,7 +186,7 @@ EOF
 | `RESULT_PATH` | `result/result.txt` | 文件在仓库内的路径 |
 | `REGIONS` | `HKG,NRT,SIN,SJC,LAX` | 保留的地区码，**顺序即输出顺序** |
 | `TOP_N` | `8` | 每个地区保留延迟最低的条数 |
-| `CRON_SCHEDULE` | `0 4 * * *` | 5 段 cron 表达式；**留成空值 = 只跑一次后退出** |
+| `CRON_SCHEDULE` | `0 4 * * *` | 5 段 cron 表达式；**留成空值 = 只跑一轮后退出**，但要配 `docker compose run --rm`（见 §3 告警） |
 | `RUN_ON_START` | `1` | 容器启动时是否先立即跑一轮 |
 | `TZ` | `Asia/Shanghai` | 影响 cron 的触发时刻 |
 | `CFST_ARGS` | 空 | 追加给 cfst 的参数（与 compose 的 `command:` 合并） |
@@ -197,6 +197,12 @@ cfst 自身的测速参数通过 compose 的 `command:` 传递，默认 `["-tl",
 （`-tl` 平均延迟上限 ms、`-sl` 下载速度下限 MB/s、`-dn` 下载测速数量）。
 
 > `.env` 已同时写进 `.gitignore` 与 `.dockerignore`，既不会被提交，也不会被 `COPY . .` 烤进镜像层。
+
+> [!NOTE]
+> 定时模式用的是容器内的 busybox `crond`，它**不继承容器环境变量**，因此 entrypoint 会把用到的变量
+> 逐个明文写进容器的 crontab（`docker compose exec cfst crontab -l` 可见，其中包含 token）。
+> 该文件只存在于容器可写层、生命周期与容器相同；不在 git、不在日志、不在镜像层。
+> 启动日志里回显的那一行 token 已被替换为 `***`。
 
 ### 3. 起容器
 
@@ -209,6 +215,12 @@ docker compose logs -f          # 看进度；测速本身要几分钟
 > `docker compose up` / `run` **不会自动重建镜像**。改过 `entrypoint.sh`、`publish.sh` 或 `Dockerfile` 后
 > 一定要重新 `docker compose build`（或 `up -d --build`），否则会拿本地旧镜像跑，
 > 症状是「日志看似正常、却没有产出」——很容易误判成脚本 bug。
+
+> [!WARNING]
+> 容器带 `restart: unless-stopped`（定时模式需要常驻）。所以**要跑单轮别用 `up -d`**：
+> 把 `CRON_SCHEDULE` 留空后 `up -d`，容器跑完一轮正常退出（退出码 0），随即被 Docker 拉起，
+> 于是无限重复测速。只想跑一轮请用：
+> `docker compose run --rm -e CRON_SCHEDULE= cfst`
 
 产物落在宿主机 `./output/`：`result.csv`（cfst 原始输出）、`result.txt`（转换后要发布的内容）、`cfst.log`（定时任务的日志）。
 `./output/` 已在 `.gitignore` 内，不会污染仓库工作区。
@@ -229,7 +241,8 @@ https://raw.githubusercontent.com/Shawnge/CloudflareSpeedTest/master/result/resu
 | 现象 | 原因与处理 |
 |---|---|
 | 日志出现 `发布失败: HTTP 401` | token 过期或被撤销。换新 token 后 `docker compose up -d --force-recreate`。**容器不会因此死掉**，远端仍保留上一版好结果 |
-| 日志出现 `结果为空，跳过发布` | 本轮没测出可用结果，远端保持上一版。原因见下面两行 |
+| 日志出现 `结果为空，跳过发布` | 本轮没测出可用结果，远端保持上一版。原因见下面几行 |
+| **每轮**都是「结果为空」（地区码却正常） | 最可能是 `command:` 里的 `-sl`（下载速度下限）定得太高：cfst 在**没有任何 IP 达到该速度**时会输出 0 条结果，**连 `result.csv` 都不创建**。默认 `-sl 50`（约 400 Mbps）很多线路达不到，于是每天都静默不发布。按自己的实际带宽调低（例如 `-sl 5`），或直接去掉 `-sl`（本方案的筛选规则只按延迟，不需要速度下限） |
 | 地区码全是 `N/A`、下载速度全是 `0.00` | 下载测速没成功 → 拿不到地区码 → 被空结果守卫拦住。① 给 `command:` 加 `"-debug"` 看真实报错；② 确认没有加 `-dd`（禁用下载测速会导致地区码全为 `N/A`）；③ 换 `CFST_URL`（见下一行） |
 | 想换测速地址 | `CFST_URL` 的域名必须由 **Cloudflare 边缘**提供服务：cfst 会拿 `ip.txt` 里的 IP 直接拨号、SNI/Host 用该域名，所以要用「正常挂在 CF 上的域名」下的大文件（可下载、>200MB、走 CF CDN）。**不要**填 `speed.cloudflare.com`——实测它不由任意 CF 边缘提供，拿 `ip.txt` 的 IP 连它会 TLS 握手失败（cfst 报 `下载测速失败 ... EOF`），地区码永远填不上 |
 | 定时没触发 | 检查 `TZ`；`docker compose exec cfst crontab -l` 可以看到实际装进容器的那一行 |

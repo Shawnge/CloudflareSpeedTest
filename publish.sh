@@ -50,6 +50,15 @@ convert() {
     csv=$1
     out=$2
 
+    # 显式报「读不到 CSV」，否则 awk 的报错会被后面 sort/awk 管道冲掉，
+    # 最终只看到一句「转换结果为空」。而 cfst 在结果为空时**根本不创建** result.csv，
+    # 所以这条是真实会发生的路径，不是理论情况。
+    if [ ! -r "$csv" ]; then
+        echo "[publish] WARN 读不到 CSV（${csv}）——cfst 在结果为空时不会创建该文件" >&2
+        : >"$out"
+        return 0
+    fi
+
     LC_ALL=C awk -F, -v R="$REGIONS" '
         BEGIN { n = split(R, r, ","); for (i = 1; i <= n; i++) allow[r[i]] = 1 }
         {
@@ -135,7 +144,7 @@ push() {
 
     sha=$(fetch_sha)
     if [ -n "$sha" ]; then
-        echo "[publish] 目标已存在，将覆盖更新（sha=$sha）"
+        echo "[publish] 目标已存在，将覆盖更新（sha=${sha}）"
     else
         echo "[publish] 目标不存在，将新建"
     fi

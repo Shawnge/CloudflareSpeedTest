@@ -80,7 +80,7 @@ run_once() {
     (cd "$CFST_DIR" && "$CFST_BIN" $ARGS) || rc=$?
 
     if [ "$rc" -ne 0 ]; then
-        echo "[entrypoint] cfst 退出码 $rc，跳过转换与发布" >&2
+        echo "[entrypoint] cfst 退出码 ${rc}，跳过转换与发布" >&2
         return "$rc"
     fi
 
@@ -125,7 +125,7 @@ if [ "$RUN_ON_START" = "1" ]; then
     run_once || rc=$?
     if [ "$rc" -ne 0 ]; then
         # 首轮失败不能让容器退出，否则一次网络抖动就会触发无限重启
-        echo "[entrypoint] 启动首轮失败（退出码 $rc），继续等待定时任务" >&2
+        echo "[entrypoint] 启动首轮失败（退出码 ${rc}），继续等待定时任务" >&2
     fi
 fi
 

@@ -5,7 +5,12 @@ set -u
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+# 后台假服务器若还活着也要收掉，否则用例失败时会留下孤儿进程占着端口
+cleanup() {
+    [ -n "${MOCK_PID:-}" ] && kill "$MOCK_PID" 2>/dev/null
+    rm -rf "$TMP"
+}
+trap cleanup EXIT
 
 PASS=0
 FAIL=0
@@ -53,6 +58,66 @@ push() {
         GITHUB_REPO="${6:-Shawnge/CloudflareSpeedTest}" \
         RESULT_PATH="${7:-result/result.txt}" \
         sh "$REPO/publish.sh" push "$1" >"$TMP/out" 2>"$TMP/err"
+}
+
+have_python() { command -v python3 >/dev/null 2>&1; }
+
+# 起一个假的 GitHub Contents API（只实现 publish.sh 用到的那两条路由），
+# 用来真实走通「创建」与「已存在→带 sha 更新」两条路径 —— 后者是上线后每天都会走的路径，
+# 也是唯一能复现「变量紧跟非 ASCII 字符」在 bash 3.2 下崩掉的地方。
+# <mode: create|update>；端口 -> $TMP/mock_port，收到的 PUT body -> $TMP/mock_put.json
+mock_gh_start() {
+    rm -f "$TMP/mock_port" "$TMP/mock_put.json"
+    cat >"$TMP/mock_gh.py" <<'PYEOF'
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+mode, portfile, putfile = sys.argv[1], sys.argv[2], sys.argv[3]
+
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if mode == "update":
+            self._send(200, {"sha": "deadbeefcafe0000"})
+        else:
+            self._send(404, {"message": "Not Found"})
+
+    def do_PUT(self):
+        n = int(self.headers.get("Content-Length", 0))
+        with open(putfile, "wb") as f:
+            f.write(self.rfile.read(n))
+        self._send(201, {"commit": {"sha": "cafebabe0000"}})
+
+
+srv = HTTPServer(("127.0.0.1", 0), H)
+with open(portfile, "w") as f:
+    f.write(str(srv.server_port))
+srv.serve_forever()
+PYEOF
+    python3 "$TMP/mock_gh.py" "$1" "$TMP/mock_port" "$TMP/mock_put.json" &
+    MOCK_PID=$!
+    i=0
+    while [ ! -s "$TMP/mock_port" ] && [ "$i" -lt 40 ]; do
+        sleep 0.25
+        i=$((i + 1))
+    done
+}
+
+mock_gh_stop() {
+    [ -n "${MOCK_PID:-}" ] && kill "$MOCK_PID" 2>/dev/null
+    wait "${MOCK_PID:-}" 2>/dev/null
+    MOCK_PID=
 }
 
 # 运行 entrypoint.sh。显式清空 GITHUB_TOKEN，保证这些用例不联网、不发布。
@@ -157,6 +222,17 @@ convert "$d/in.csv" "$d/out.txt" "" ""
 assert_eq test_empty_result_writes_empty_file "$(wc -c <"$d/out.txt" | tr -d ' ')" "0"
 
 # ---------------------------------------------------------------------------
+# CSV 文件不存在：cfst 在「结果为空」时**根本不创建** result.csv（真实会发生的路径）。
+# 必须给出一句能对上号的警告，而不是让 awk 的报错被管道冲掉、只剩「转换结果为空」。
+d=$(newdir csvmissing)
+rc=0
+convert "$d/nope.csv" "$d/out.txt" || rc=$?
+assert_eq test_convert_missing_csv_exit_code "$rc" "0"
+assert_contains test_convert_missing_csv_warns "$(cat "$TMP/err")" "读不到 CSV"
+assert_eq test_convert_missing_csv_output_empty \
+    "$([ -s "$d/out.txt" ] && echo nonempty || echo empty)" "empty"
+
+# ---------------------------------------------------------------------------
 # CRLF 输入：地区码会变成 "HKG\r"，必须先剥掉 \r 才能匹配
 d=$(newdir crlf)
 printf '%s\r\n' "$HEADER" >"$d/in.csv"
@@ -206,6 +282,51 @@ push "$d/x.txt" dummy 1 http://127.0.0.1:1 || rc=$?
 assert_eq test_dry_run_exit_code "$rc" "0"
 assert_contains test_dry_run_prints_branch "$(cat "$TMP/out")" '"branch":"master"'
 assert_contains test_dry_run_prints_content "$(cat "$TMP/out")" '"content":"'
+
+# ---------------------------------------------------------------------------
+# 源码卫生：变量名不许紧跟非 ASCII 字节（例如 「（sha=$sha）」）。
+# bash 3.2（macOS 的 /bin/sh）会把随后的全角字符当成变量名的一部分，在 set -u 下
+# 报 unbound variable 并中止整个脚本；busybox ash 与 dash 不会，所以这个坑只在
+# 「脱离容器直接跑 publish.sh」（spec §6 明确支持的调试方式）时才现形。
+assert_eq test_no_variable_adjacent_to_non_ascii \
+    "$(LC_ALL=C grep -nE '\$[A-Za-z_][A-Za-z0-9_]*[^ -~]' "$REPO/publish.sh" "$REPO/entrypoint.sh" 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+# ---------------------------------------------------------------------------
+# push 的两条成功路径（用假 API，真发 HTTP）
+if have_python; then
+    # 创建：远端 404 -> 不带 sha 的 PUT
+    d=$(newdir pushcreate)
+    printf '1.1.1.1#优选HKG-45.12m\n' >"$d/x.txt"
+    mock_gh_start create
+    rc=0
+    push "$d/x.txt" tok 0 "http://127.0.0.1:$(cat "$TMP/mock_port")" || rc=$?
+    mock_gh_stop
+    assert_eq test_push_create_exit_code "$rc" "0"
+    assert_contains test_push_create_announces_new "$(cat "$TMP/out")" "目标不存在，将新建"
+    assert_contains test_push_create_confirms "$(cat "$TMP/out")" "已发布到"
+    assert_eq test_push_create_payload_has_no_sha \
+        "$(jq -r 'has("sha")' "$TMP/mock_put.json" 2>/dev/null)" "false"
+    assert_eq test_push_create_payload_branch \
+        "$(jq -r '.branch' "$TMP/mock_put.json" 2>/dev/null)" "master"
+
+    # 更新：远端 200 带 sha -> PUT 必须原样带上该 sha，且内容要能解回
+    d=$(newdir pushupdate)
+    printf '2.2.2.2#优选NRT-52.30m\n' >"$d/x.txt"
+    mock_gh_start update
+    rc=0
+    push "$d/x.txt" tok 0 "http://127.0.0.1:$(cat "$TMP/mock_port")" || rc=$?
+    mock_gh_stop
+    assert_eq test_push_update_exit_code "$rc" "0"
+    assert_contains test_push_update_announces_sha \
+        "$(cat "$TMP/out")" "目标已存在，将覆盖更新（sha=deadbeefcafe0000）"
+    assert_eq test_push_update_payload_sha \
+        "$(jq -r '.sha' "$TMP/mock_put.json" 2>/dev/null)" "deadbeefcafe0000"
+    assert_eq test_push_update_content_roundtrip \
+        "$(jq -r '.content' "$TMP/mock_put.json" 2>/dev/null | base64 -d 2>/dev/null)" "2.2.2.2#优选NRT-52.30m"
+else
+    skip test_push_create_exit_code "本机没有 python3"
+    skip test_push_update_exit_code "本机没有 python3"
+fi
 
 # ---------------------------------------------------------------------------
 # entrypoint：单次运行，假 cfst 按 -o 写 CSV，entrypoint 负责转换出 txt
