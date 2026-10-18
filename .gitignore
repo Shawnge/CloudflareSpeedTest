@@ -3,4 +3,8 @@ Releases
 *.exe
 *.csv
 .env
-output/
+# 忽略 output/ 下的实际产物，但保留占位文件：
+# Portainer 用 Git 部署 stack 时，相对路径挂载（./output:/data）要求该目录必须已存在于仓库，
+# 否则报 `Bind mount failed: '/data/compose/<id>/output' does not exist`。
+output/*
+!output/.gitkeep
