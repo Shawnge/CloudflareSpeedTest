@@ -40,10 +40,10 @@ assert_not_contains() { # <name> <haystack> <needle>
     esac
 }
 
-# 调用 publish.sh convert。REGIONS/TOP_N 用 env 显式传入，避免用例之间互相串味。
+# 调用 publish.sh convert。REGIONS 用 env 显式传入，避免用例之间互相串味。
 # 传空串时 publish.sh 内部的 ${VAR:=默认值} 会补上默认值。
-convert() { # <csv> <out> [REGIONS] [TOP_N]
-    env REGIONS="${3:-}" TOP_N="${4:-}" \
+convert() { # <csv> <out> [REGIONS]
+    env REGIONS="${3:-}" \
         sh "$REPO/publish.sh" convert "$1" "$2" 2>"$TMP/err"
 }
 
@@ -164,7 +164,6 @@ entrypoint_run_cfst_env() {
         CFST_SL="$sl" \
         CFST_ARGS= \
         REGIONS=HKG,NRT,SIN,SJC,LAX \
-        TOP_N=8 \
         GITHUB_TOKEN= \
         sh "$REPO/entrypoint.sh" "$@" >"$TMP/ep_out" 2>"$TMP/ep_err"
 }
@@ -199,24 +198,26 @@ row "$d/in.csv" 2.2.2.2 52.30 NRT
 row "$d/in.csv" 3.3.3.3 33.10 AMS      # 不在名单里
 row "$d/in.csv" 4.4.4.4 11.00 N/A      # 拿不到地区码
 row "$d/in.csv" 5.5.5.5 60.00 SIN
-convert "$d/in.csv" "$d/out.txt" "HKG,NRT,SIN,SJC,LAX" "8"
+convert "$d/in.csv" "$d/out.txt" "HKG,NRT,SIN,SJC,LAX"
 expected='1.1.1.1#优选HKG-45.12m
 2.2.2.2#优选NRT-52.30m
 5.5.5.5#优选SIN-60.00m'
 assert_eq test_basic_filter_and_format "$(cat "$d/out.txt")" "$expected"
 
 # ---------------------------------------------------------------------------
-# 每区截断到 TOP_N，且截断的是「延迟最小的 N 个」
-d=$(newdir topn)
+# publish.sh 不再截断：result.csv 有多少条就转多少条，组内按延迟升序
+d=$(newdir allrows)
 fixture "$d/in.csv"
 row "$d/in.csv" 1.1.1.1 50.00 HKG
 row "$d/in.csv" 2.2.2.2 20.00 HKG
 row "$d/in.csv" 3.3.3.3 30.00 HKG
 row "$d/in.csv" 4.4.4.4 40.00 HKG
-convert "$d/in.csv" "$d/out.txt" "HKG" "2"
+convert "$d/in.csv" "$d/out.txt" "HKG"
 expected='2.2.2.2#优选HKG-20.00m
-3.3.3.3#优选HKG-30.00m'
-assert_eq test_top_n_truncation_and_order "$(cat "$d/out.txt")" "$expected"
+3.3.3.3#优选HKG-30.00m
+4.4.4.4#优选HKG-40.00m
+1.1.1.1#优选HKG-50.00m'
+assert_eq test_outputs_every_row_in_region_order "$(cat "$d/out.txt")" "$expected"
 
 # ---------------------------------------------------------------------------
 # 输出顺序跟随 REGIONS 声明顺序，不是 CSV 顺序、也不是字典序
@@ -224,7 +225,7 @@ d=$(newdir order)
 fixture "$d/in.csv"
 row "$d/in.csv" 1.1.1.1 20.00 HKG      # CSV 里 HKG 在前
 row "$d/in.csv" 2.2.2.2 30.00 SIN
-convert "$d/in.csv" "$d/out.txt" "SIN,HKG" ""
+convert "$d/in.csv" "$d/out.txt" "SIN,HKG"
 expected='2.2.2.2#优选SIN-30.00m
 1.1.1.1#优选HKG-20.00m'
 assert_eq test_region_output_order "$(cat "$d/out.txt")" "$expected"
@@ -236,7 +237,7 @@ fixture "$d/in.csv"
 row "$d/in.csv" 1.1.1.1 100.50 HKG
 row "$d/in.csv" 2.2.2.2 9.90 HKG
 row "$d/in.csv" 3.3.3.3 10.10 HKG
-convert "$d/in.csv" "$d/out.txt" "HKG" "8"
+convert "$d/in.csv" "$d/out.txt" "HKG"
 expected='2.2.2.2#优选HKG-9.90m
 3.3.3.3#优选HKG-10.10m
 1.1.1.1#优选HKG-100.50m'
@@ -248,7 +249,7 @@ d=$(newdir empty)
 fixture "$d/in.csv"
 row "$d/in.csv" 1.1.1.1 45.12 N/A
 row "$d/in.csv" 2.2.2.2 52.30 N/A
-convert "$d/in.csv" "$d/out.txt" "" ""
+convert "$d/in.csv" "$d/out.txt"
 assert_eq test_empty_result_writes_empty_file "$(wc -c <"$d/out.txt" | tr -d ' ')" "0"
 
 # ---------------------------------------------------------------------------
@@ -267,7 +268,7 @@ assert_eq test_convert_missing_csv_output_empty \
 d=$(newdir crlf)
 printf '%s\r\n' "$HEADER" >"$d/in.csv"
 printf '1.1.1.1,4,4,0.00,45.12,10.00,HKG\r\n' >>"$d/in.csv"
-convert "$d/in.csv" "$d/out.txt" "" ""
+convert "$d/in.csv" "$d/out.txt"
 assert_eq test_crlf_input "$(cat "$d/out.txt")" '1.1.1.1#优选HKG-45.12m'
 
 # ---------------------------------------------------------------------------
@@ -280,7 +281,7 @@ row "$d/in.csv" 3.3.3.3 33.00 N/A
 row "$d/in.csv" 4.4.4.4 44.00 ""       # 空
 row "$d/in.csv" 5.5.5.5 55.00 HKG      # 唯一有效
 rc=0
-convert "$d/in.csv" "$d/out.txt" "" "" || rc=$?
+convert "$d/in.csv" "$d/out.txt" || rc=$?
 assert_eq test_non_iata_colo_dropped "$(cat "$d/out.txt")" '5.5.5.5#优选HKG-55.00m'
 assert_eq test_non_iata_colo_dropped_exit_code "$rc" "0"
 
@@ -393,13 +394,14 @@ d=$(newdir epregions)
 make_args_recording_cfst
 rc=0
 env DATA_DIR="$d" CFST_BIN="$TMP/fake-cfst-args" PUBLISH_SH="$REPO/publish.sh" \
-    CRON_SCHEDULE= CFST_ARGS= GITHUB_TOKEN= REGIONS=' nrt , sin ' TOP_N=3 \
+    CRON_SCHEDULE= CFST_ARGS= GITHUB_TOKEN= REGIONS=' nrt , sin ' CFST_DN=20 \
     sh "$REPO/entrypoint.sh" >"$TMP/ep_out" 2>"$TMP/ep_err" || rc=$?
 assert_eq test_regions_exit_code "$rc" "0"
 args=$(cat "$d/cfst-args.txt" 2>/dev/null)
 assert_contains test_regions_enable_httping "$args" "-httping"
 assert_contains test_regions_filter_before_download "$args" "-cfcolo NRT,SIN"
-assert_contains test_regions_use_independent_quota "$args" "-dn-per-colo 3"
+assert_contains test_regions_use_global_download_limit "$args" "-dn 20"
+assert_not_contains test_regions_no_per_region_quota "$args" "-dn-per-colo"
 
 rc=0
 env DATA_DIR="$d" CFST_BIN="$TMP/fake-cfst-args" PUBLISH_SH="$REPO/publish.sh" \
@@ -409,6 +411,7 @@ args=$(cat "$d/cfst-args.txt" 2>/dev/null)
 assert_eq test_regions_explicit_override_exit_code "$rc" "0"
 assert_contains test_regions_explicit_override "$args" "-cfcolo=NRT"
 assert_not_contains test_regions_explicit_not_duplicated "$args" "-cfcolo NRT,SIN"
+assert_not_contains test_regions_explicit_no_per_region_quota "$args" "-dn-per-colo"
 assert_contains test_regions_explicit_override_warns "$(cat "$TMP/ep_err")" "REGIONS"
 
 # 未设置 CRON_SCHEDULE 应进入默认定时模式，并执行 token 校验。
@@ -533,7 +536,7 @@ FAKEEOF
         -v "$d:/fixtures:ro" -e DATA_DIR=/scheduled/results \
         -e CFST_BIN=/fixtures/fake-cfst -e PUBLISH_SH=/opt/cfst/publish.sh \
         -e RUN_ON_START=0 -e GITHUB_TOKEN=test-token -e PUBLISH_DRY_RUN=1 \
-        -e REGIONS=NRT,SIN -e TOP_N=1 -e TZ=Asia/Shanghai \
+        -e REGIONS=NRT,SIN -e TZ=Asia/Shanghai \
         cfst:test >"$TMP/cron-start" 2>"$TMP/cron-err" || rc=$?
     assert_eq test_cron_container_starts "$rc" "0"
     [ "$rc" -eq 0 ] || return
@@ -551,7 +554,7 @@ FAKEEOF
         -e CFST_BIN=/fixtures/fake-cfst -e PUBLISH_SH=/opt/cfst/publish.sh \
         -e 'CRON_SCHEDULE=* * * * *' -e RUN_ON_START=0 \
         -e GITHUB_TOKEN=test-token -e PUBLISH_DRY_RUN=1 \
-        -e REGIONS=NRT,SIN -e TOP_N=1 -e TZ=Asia/Shanghai \
+        -e REGIONS=NRT,SIN -e TZ=Asia/Shanghai \
         cfst:test >"$TMP/cron-start" 2>"$TMP/cron-err"
     sleep 1
     line=$(docker exec "$CRON_CONTAINER" crontab -l 2>/dev/null)
@@ -568,7 +571,7 @@ FAKEEOF
     args=$(docker exec "$CRON_CONTAINER" cat /scheduled/results/cfst-args.txt 2>/dev/null)
     assert_contains test_cron_passes_regions "$args" "-cfcolo NRT,SIN"
     assert_contains test_cron_enables_httping "$args" "-httping"
-    assert_contains test_cron_passes_per_region_quota "$args" "-dn-per-colo 1"
+    assert_not_contains test_cron_no_per_region_quota "$args" "-dn-per-colo"
     expected='2.2.2.2#优选NRT-20.00m
 3.3.3.3#优选SIN-30.00m'
     assert_eq test_cron_publishes_only_regions \
@@ -612,9 +615,9 @@ if have_docker; then
         rc=0
         docker run --rm --entrypoint go cfst-builder:test test ./... >"$TMP/go-test.log" 2>&1 || rc=$?
         if [ "$rc" -eq 0 ]; then
-            ok test_go_download_quotas
+            ok test_go_download_limit
         else
-            bad test_go_download_quotas "$(tail -15 "$TMP/go-test.log")"
+            bad test_go_download_limit "$(tail -15 "$TMP/go-test.log")"
         fi
     else
         bad test_builder_stage_has_no_env_file "构建阶段镜像失败: $(tail -3 "$TMP/build2.log" | tr '\n' ' ')"
@@ -622,7 +625,7 @@ if have_docker; then
     [ "$created_env" -eq 1 ] && rm -f "$REPO/.env"
 else
     skip test_builder_stage_has_no_env_file "本机没有 docker"
-    skip test_go_download_quotas "本机没有 docker"
+    skip test_go_download_limit "本机没有 docker"
 fi
 
 # ---------------------------------------------------------------------------

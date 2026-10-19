@@ -6,8 +6,8 @@
 #   publish.sh all     <csv> <out.txt>    先转换再发布（结果为空则跳过发布）
 #
 # 环境变量（默认值见下）：
-#   REGIONS          保留的地区码，逗号分隔，顺序即输出顺序
-#   TOP_N            每个地区保留延迟最低的条数
+#   REGIONS          保留的地区码，逗号分隔，顺序即输出顺序；
+#                    条数由 cfst 的 -dn 控制，这里不再截断
 #   GITHUB_TOKEN     发布用的 token（为空则只测速不发布）
 #   GITHUB_REPO      目标仓库 owner/repo
 #   GITHUB_BRANCH    目标分支
@@ -19,7 +19,6 @@
 set -eu
 
 : "${REGIONS:=HKG,NRT,SIN,SJC,LAX}"
-: "${TOP_N:=8}"
 : "${GITHUB_TOKEN:=}"
 : "${GITHUB_REPO:=Shawnge/CloudflareSpeedTest}"
 : "${GITHUB_BRANCH:=master}"
@@ -69,10 +68,10 @@ convert() {
             printf "%s\t%s\t%s\n", $7, $5, $1
         }
     ' "$csv" \
-        | LC_ALL=C sort -t"$TAB" -k1,1 -k2,2g \
-        | LC_ALL=C awk -F"$TAB" -v R="$REGIONS" -v N="$TOP_N" '
+        | LC_ALL=C sort -t"$TAB" -k2,2g \
+        | LC_ALL=C awk -F"$TAB" -v R="$REGIONS" '
             BEGIN { n = split(R, order, ",") }
-            { c[$1]++; if (c[$1] <= N) buf[$1] = buf[$1] $0 "\n" }
+            { buf[$1] = buf[$1] $0 "\n" }
             END { for (i = 1; i <= n; i++) printf "%s", buf[order[i]] }
         ' \
         | LC_ALL=C awk -F"$TAB" '{ printf "%s#优选%s-%sm\n", $3, $1, $2 }' \

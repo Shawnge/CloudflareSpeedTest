@@ -29,9 +29,8 @@ var (
 	Timeout = defaultTimeout
 	Disable = defaultDisableDownload
 
-	TestCount        = defaultTestNum
-	TestCountPerColo int
-	MinSpeed         = defaultMinSpeed
+	TestCount = defaultTestNum
+	MinSpeed  = defaultMinSpeed
 )
 
 func checkDownloadDefault() {
@@ -57,9 +56,6 @@ func testDownloadSpeed(ipSet utils.PingDelaySet, download func(*net.IPAddr) (flo
 	checkDownloadDefault()
 	if Disable {
 		return utils.DownloadSpeedSet(ipSet)
-	}
-	if TestCountPerColo > 0 {
-		return downloadSpeedByColo(ipSet, download)
 	}
 	if len(ipSet) <= 0 { // IP 数组长度(IP数量) 大于 0 时才会继续下载测速
 		utils.Yellow.Println("[信息] 延迟测速结果 IP 数量为 0，跳过下载测速。")
@@ -97,54 +93,13 @@ func testDownloadSpeed(ipSet utils.PingDelaySet, download func(*net.IPAddr) (flo
 		}
 	}
 	bar.Done()
-	if MinSpeed == 0.00 { // 如果没有指定下载速度下限，则直接返回所有测速数据
-		speedSet = utils.DownloadSpeedSet(ipSet)
-	} else if utils.Debug && len(speedSet) == 0 { // 如果指定了下载速度下限，且是调试模式下，且没有找到任何一个满足条件的 IP 时，返回所有测速数据，供用户查看当前的测速结果，以便适当调低预期测速条件
+	// 未指定速度下限时，speedSet 就是实际测过的 IP（最多 -dn 个），
+	// 不再回退到整个候选列表，这样 -dn 直接决定 result.csv 的行数。
+	if utils.Debug && len(speedSet) == 0 { // 调试模式下且没有找到满足条件的 IP 时，返回所有测速数据，供用户查看当前结果，以便调整预期条件
 		utils.Yellow.Println("[调试] 没有满足 下载速度下限 条件的 IP，忽略条件返回所有测速数据（方便下次测速时调整条件）。")
 		speedSet = utils.DownloadSpeedSet(ipSet)
 	}
 	// 按速度排序
-	sort.Sort(speedSet)
-	return
-}
-
-func downloadSpeedByColo(ipSet utils.PingDelaySet, download func(*net.IPAddr) (float64, string)) (speedSet utils.DownloadSpeedSet) {
-	counts := make(map[string]int)
-	HttpingCFColomap.Range(func(key, value interface{}) bool {
-		counts[key.(string)] = 0
-		return true
-	})
-	quota := TestCountPerColo
-	utils.Cyan.Printf("开始按地区下载测速（下限：%.2f MB/s，每区：%d，地区数：%d，候选：%d）\n", MinSpeed, quota, len(counts), len(ipSet))
-	bar := utils.NewBar(quota*len(counts), "", "")
-	full := 0
-	for _, item := range ipSet {
-		count, allowed := counts[item.Colo]
-		if !allowed || count >= quota {
-			continue
-		}
-		speed, _ := download(item.IP)
-		// 速度门槛关闭时，失败的下载也不能占用配额或进入发布结果。
-		if speed <= 0 || speed < MinSpeed*1024*1024 {
-			continue
-		}
-		item.DownloadSpeed = speed
-		speedSet = append(speedSet, item)
-		counts[item.Colo]++
-		bar.Grow(1, "")
-		if counts[item.Colo] == quota {
-			full++
-			if full == len(counts) {
-				break
-			}
-		}
-	}
-	bar.Done()
-	for colo, count := range counts {
-		if count < quota {
-			utils.Yellow.Printf("[信息] 地区 %s 合格 IP %d/%d，候选已测完。\n", colo, count, quota)
-		}
-	}
 	sort.Sort(speedSet)
 	return
 }

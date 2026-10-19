@@ -31,8 +31,6 @@ https://github.com/XIU2/CloudflareSpeedTest
         延迟测速次数；单个 IP 延迟测速的次数；(默认 4 次)
     -dn 10
         下载测速数量；延迟测速并排序后，从最低延迟起下载测速的数量；(默认 10 个)
-    -dn-per-colo 8
-        每个地区分别获取的合格 IP 数量；需配合 -httping 和 -cfcolo，启用后不受 -dn 总数限制；(默认 0，即禁用)
     -dt 10
         下载测速时间；单个 IP 下载测速最长时间，不能太短；(默认 10 秒)
     -tp 443
@@ -83,7 +81,6 @@ https://github.com/XIU2/CloudflareSpeedTest
 	flag.IntVar(&task.Routines, "n", 200, "延迟测速线程")
 	flag.IntVar(&task.PingTimes, "t", 4, "延迟测速次数")
 	flag.IntVar(&task.TestCount, "dn", 10, "下载测速数量")
-	flag.IntVar(&task.TestCountPerColo, "dn-per-colo", 0, "每个地区分别获取的合格 IP 数量")
 	flag.IntVar(&downloadTime, "dt", 10, "下载测速时间")
 	flag.IntVar(&task.TCPPort, "tp", 443, "指定测速端口")
 	flag.StringVar(&task.URL, "url", "https://cf.xiu2.xyz/url", "指定测速地址")
@@ -110,11 +107,6 @@ https://github.com/XIU2/CloudflareSpeedTest
 	flag.BoolVar(&printVersion, "v", false, "打印程序版本")
 	flag.Usage = func() { fmt.Print(help) }
 	flag.Parse()
-
-	if task.TestCountPerColo < 0 || (task.TestCountPerColo > 0 && (!task.Httping || task.HttpingCFColo == "")) {
-		fmt.Fprintln(os.Stderr, "-dn-per-colo 必须非负，启用时需配合 -httping 和 -cfcolo")
-		os.Exit(2)
-	}
 
 	if task.MinSpeed > 0 && time.Duration(maxDelay)*time.Millisecond == utils.InputMaxDelay {
 		utils.Yellow.Println("[提示] 在使用 [-sl] 参数时，建议搭配 [-tl] 参数，以避免因凑不够 [-dn] 数量而一直测速...")

@@ -18,10 +18,9 @@
 #                  （内置的 https://cf.xiu2.xyz/url 在部分网络会返回 403，
 #                   后果是所有下载速度 0.00、地区码全是 N/A、结果为空）
 #   CFST_TL        平均延迟上限(ms)，非空时作为 -tl 传给 cfst
-#   CFST_DN        普通模式的下载测速数量；地区配额模式由 TOP_N 决定
+#   CFST_DN        下载测速总数，非空时作为 -dn 传给 cfst（compose 默认 20）
 #   CFST_SL        下载速度下限(MB/s)，非空时作为 -sl 传给 cfst；想关掉就设成空值
 #   REGIONS        测速和发布保留的地区码，逗号分隔；通过 HTTPing 提前筛选
-#   TOP_N          每个地区独立获取的合格 IP 数量（默认 8），候选不足时保留实际数量
 #   其余（GITHUB_*、TZ 等）原样透传给 publish.sh
 set -eu
 
@@ -41,8 +40,7 @@ CRON_SCHEDULE=${CRON_SCHEDULE-0 4 * * *}
 : "${CFST_SL:=}"
 REGIONS=$(printf '%s' "${REGIONS-}" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
 : "${REGIONS:=HKG,NRT,SIN,SJC,LAX}"
-: "${TOP_N:=8}"
-export REGIONS TOP_N
+export REGIONS
 
 CFST_DIR=$(dirname "$CFST_BIN")
 RESULT_CSV="$DATA_DIR/result.csv"
@@ -90,13 +88,12 @@ add_cfst_opt -tl CFST_TL "$CFST_TL"
 add_cfst_opt -dn CFST_DN "$CFST_DN"
 add_cfst_opt -sl CFST_SL "$CFST_SL"
 
-# 地区码来自 HTTP 响应头，必须先按地区筛选，再应用下载测速数量上限。
+# 地区码来自 HTTP 响应头，必须先按地区筛选，下载测速总数仍由 -dn 控制。
 case " $ARGS " in
 *' -httping '* | *' -httping='*) : ;;
 *) ARGS="$ARGS -httping" ;;
 esac
 add_cfst_opt -cfcolo REGIONS "$REGIONS"
-add_cfst_opt -dn-per-colo TOP_N "$TOP_N"
 
 # 未显式指定 -o 时补上固定输出路径。
 # 必须是固定名（不能用时间戳），因为下游 publish.sh 只认 $DATA_DIR/result.csv。
@@ -192,7 +189,7 @@ add_env() { # <变量名>
         cron_prefix="$cron_prefix $1='$val'"
     fi
 }
-for name in DATA_DIR CFST_BIN PUBLISH_SH REGIONS TOP_N GITHUB_TOKEN GITHUB_REPO \
+for name in DATA_DIR CFST_BIN PUBLISH_SH REGIONS GITHUB_TOKEN GITHUB_REPO \
     GITHUB_BRANCH RESULT_PATH GITHUB_API_BASE PUBLISH_DRY_RUN CFST_URL TZ; do
     add_env "$name"
 done
