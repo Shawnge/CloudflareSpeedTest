@@ -8,6 +8,7 @@ TMP=$(mktemp -d)
 # 后台假服务器若还活着也要收掉，否则用例失败时会留下孤儿进程占着端口
 cleanup() {
     [ -n "${MOCK_PID:-}" ] && kill "$MOCK_PID" 2>/dev/null
+    [ -n "${CRON_CONTAINER:-}" ] && docker rm -fv "$CRON_CONTAINER" >/dev/null 2>&1
     rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -162,6 +163,8 @@ entrypoint_run_cfst_env() {
         CFST_DN="$dn" \
         CFST_SL="$sl" \
         CFST_ARGS= \
+        REGIONS=HKG,NRT,SIN,SJC,LAX \
+        TOP_N=8 \
         GITHUB_TOKEN= \
         sh "$REPO/entrypoint.sh" "$@" >"$TMP/ep_out" 2>"$TMP/ep_err"
 }
@@ -385,6 +388,44 @@ expected='1.1.1.1#优选HKG-45.12m
 2.2.2.2#优选NRT-52.30m'
 assert_eq test_entrypoint_single_run_produces_txt "$(cat "$d/result.txt" 2>/dev/null)" "$expected"
 
+# REGIONS 必须在测速阶段生效，不能只从全区测速的前几个结果里过滤。
+d=$(newdir epregions)
+make_args_recording_cfst
+rc=0
+env DATA_DIR="$d" CFST_BIN="$TMP/fake-cfst-args" PUBLISH_SH="$REPO/publish.sh" \
+    CRON_SCHEDULE= CFST_ARGS= GITHUB_TOKEN= REGIONS=' nrt , sin ' TOP_N=3 \
+    sh "$REPO/entrypoint.sh" >"$TMP/ep_out" 2>"$TMP/ep_err" || rc=$?
+assert_eq test_regions_exit_code "$rc" "0"
+args=$(cat "$d/cfst-args.txt" 2>/dev/null)
+assert_contains test_regions_enable_httping "$args" "-httping"
+assert_contains test_regions_filter_before_download "$args" "-cfcolo NRT,SIN"
+assert_contains test_regions_use_independent_quota "$args" "-dn-per-colo 3"
+
+rc=0
+env DATA_DIR="$d" CFST_BIN="$TMP/fake-cfst-args" PUBLISH_SH="$REPO/publish.sh" \
+    CRON_SCHEDULE= CFST_ARGS= GITHUB_TOKEN= REGIONS=NRT,SIN \
+    sh "$REPO/entrypoint.sh" -httping -cfcolo=NRT >"$TMP/ep_out" 2>"$TMP/ep_err" || rc=$?
+args=$(cat "$d/cfst-args.txt" 2>/dev/null)
+assert_eq test_regions_explicit_override_exit_code "$rc" "0"
+assert_contains test_regions_explicit_override "$args" "-cfcolo=NRT"
+assert_not_contains test_regions_explicit_not_duplicated "$args" "-cfcolo NRT,SIN"
+assert_contains test_regions_explicit_override_warns "$(cat "$TMP/ep_err")" "REGIONS"
+
+# 未设置 CRON_SCHEDULE 应进入默认定时模式，并执行 token 校验。
+rc=0
+env -u CRON_SCHEDULE RUN_ON_START=0 GITHUB_TOKEN= \
+    sh "$REPO/entrypoint.sh" >"$TMP/ep_out" 2>"$TMP/ep_err" || rc=$?
+assert_eq test_unset_cron_exit_code "$rc" "1"
+assert_contains test_unset_cron_uses_scheduled_mode "$(cat "$TMP/ep_err")" "GITHUB_TOKEN"
+assert_not_contains test_unset_cron_has_no_unbound_variable "$(cat "$TMP/ep_err")" "unbound variable"
+
+# compose 的显式空值必须保留，否则 CFST_SL= 仍会加上速度门槛。
+if have_docker; then
+    limits=$(env CFST_TL= CFST_DN= CFST_SL= docker compose -f "$REPO/docker-compose.yml" \
+        config --format json | jq -r '.services.cfst.environment | [.CFST_TL, .CFST_DN, .CFST_SL] | join("|")')
+    assert_eq test_compose_preserves_empty_limits "$limits" "||"
+fi
+
 # ---------------------------------------------------------------------------
 # entrypoint：cfst 失败时，必须先把上一轮的旧 csv/txt 清掉，且绝不用旧数据发布
 d=$(newdir epstale)
@@ -457,7 +498,7 @@ entrypoint_run_cfst_env "$d" "$TMP/fake-cfst-args" "" "1" "" "" "" "" || rc=$?
 args=$(cat "$d/cfst-args.txt" 2>/dev/null)
 assert_eq test_cfst_env_empty_exit_code "$rc" "0"
 assert_not_contains test_cfst_tl_empty_not_passed "$args" "-tl"
-assert_not_contains test_cfst_dn_empty_not_passed "$args" "-dn"
+assert_not_contains test_cfst_dn_empty_not_passed " $args " " -dn "
 assert_not_contains test_cfst_sl_empty_not_passed "$args" "-sl"
 
 # ---------------------------------------------------------------------------
@@ -476,6 +517,68 @@ assert_not_contains test_cfst_env_command_line_env_not_applied "$args" "-tl 150"
 assert_contains test_cfst_env_command_line_wins_warns "$(cat "$TMP/ep_err")" "WARN"
 assert_contains test_cfst_env_command_line_wins_warns_name "$(cat "$TMP/ep_err")" "CFST_TL"
 
+# 使用镜像内真实的 BusyBox crond，验证自定义表达式、首次定时执行和地区透传。
+test_scheduled_run() {
+    d=$(newdir epcron)
+    cat >"$d/fake-cfst" <<'FAKEEOF'
+#!/bin/sh
+printf '%s\n' "$*" >"$DATA_DIR/cfst-args.txt"
+printf 'IP 地址,已发送,已接收,丢包率,平均延迟,下载速度(MB/s),地区码\n' >"$DATA_DIR/result.csv"
+printf '1.1.1.1,4,4,0.00,10.00,30.00,HKG\n2.2.2.2,4,4,0.00,20.00,30.00,NRT\n3.3.3.3,4,4,0.00,30.00,30.00,SIN\n' >>"$DATA_DIR/result.csv"
+FAKEEOF
+    chmod +x "$d/fake-cfst"
+    CRON_CONTAINER="cfst-cron-test-$$"
+    rc=0
+    docker run -d --name "$CRON_CONTAINER" \
+        -v "$d:/fixtures:ro" -e DATA_DIR=/scheduled/results \
+        -e CFST_BIN=/fixtures/fake-cfst -e PUBLISH_SH=/opt/cfst/publish.sh \
+        -e RUN_ON_START=0 -e GITHUB_TOKEN=test-token -e PUBLISH_DRY_RUN=1 \
+        -e REGIONS=NRT,SIN -e TOP_N=1 -e TZ=Asia/Shanghai \
+        cfst:test >"$TMP/cron-start" 2>"$TMP/cron-err" || rc=$?
+    assert_eq test_cron_container_starts "$rc" "0"
+    [ "$rc" -eq 0 ] || return
+    sleep 1
+    line=$(docker exec "$CRON_CONTAINER" crontab -l 2>/dev/null)
+    assert_contains test_cron_default_schedule "$line" "0 4 * * * "
+    assert_eq test_cron_creates_output_dir \
+        "$(docker exec "$CRON_CONTAINER" sh -c 'test -d /scheduled/results && echo yes')" "yes"
+    assert_eq test_cron_run_on_start_disabled \
+        "$(docker exec "$CRON_CONTAINER" sh -c 'test ! -e /scheduled/results/cfst-args.txt && echo yes')" "yes"
+    docker rm -fv "$CRON_CONTAINER" >/dev/null 2>&1
+
+    docker run -d --name "$CRON_CONTAINER" \
+        -v "$d:/fixtures:ro" -e DATA_DIR=/scheduled/results \
+        -e CFST_BIN=/fixtures/fake-cfst -e PUBLISH_SH=/opt/cfst/publish.sh \
+        -e 'CRON_SCHEDULE=* * * * *' -e RUN_ON_START=0 \
+        -e GITHUB_TOKEN=test-token -e PUBLISH_DRY_RUN=1 \
+        -e REGIONS=NRT,SIN -e TOP_N=1 -e TZ=Asia/Shanghai \
+        cfst:test >"$TMP/cron-start" 2>"$TMP/cron-err"
+    sleep 1
+    line=$(docker exec "$CRON_CONTAINER" crontab -l 2>/dev/null)
+    assert_contains test_cron_custom_schedule "$line" "* * * * * "
+    rc=0
+    docker exec "$CRON_CONTAINER" sh -c '
+        i=0
+        until [ -s /scheduled/results/result.txt ]; do
+            i=$((i + 1))
+            [ "$i" -lt 70 ] || exit 1
+            sleep 1
+        done' || rc=$?
+    assert_eq test_cron_really_executes "$rc" "0"
+    args=$(docker exec "$CRON_CONTAINER" cat /scheduled/results/cfst-args.txt 2>/dev/null)
+    assert_contains test_cron_passes_regions "$args" "-cfcolo NRT,SIN"
+    assert_contains test_cron_enables_httping "$args" "-httping"
+    assert_contains test_cron_passes_per_region_quota "$args" "-dn-per-colo 1"
+    expected='2.2.2.2#优选NRT-20.00m
+3.3.3.3#优选SIN-30.00m'
+    assert_eq test_cron_publishes_only_regions \
+        "$(docker exec "$CRON_CONTAINER" cat /scheduled/results/result.txt 2>/dev/null)" "$expected"
+    assert_contains test_cron_dry_run_publish \
+        "$(docker exec "$CRON_CONTAINER" cat /scheduled/results/cfst.log 2>/dev/null)" "DRY-RUN"
+    docker rm -fv "$CRON_CONTAINER" >/dev/null 2>&1
+    CRON_CONTAINER=
+}
+
 # ---------------------------------------------------------------------------
 # 镜像：运行阶段必须带 curl / jq / crond，且有可执行的 publish.sh
 # 用 --entrypoint sh 覆盖镜像的 ENTRYPOINT，否则命令会被 entrypoint.sh 吃掉
@@ -486,6 +589,7 @@ if have_docker; then
             -c 'command -v curl && command -v jq && command -v crond && test -x /opt/cfst/publish.sh' \
             >"$TMP/it.log" 2>&1 || rc=$?
         assert_eq test_image_has_runtime_deps "$rc" "0"
+        test_scheduled_run
     else
         bad test_image_has_runtime_deps "镜像构建失败: $(tail -3 "$TMP/build.log" | tr '\n' ' ')"
     fi
@@ -505,12 +609,20 @@ if have_docker; then
         rc=0
         docker run --rm --entrypoint sh cfst-builder:test -c 'test ! -e /app/.env' >/dev/null 2>&1 || rc=$?
         assert_eq test_builder_stage_has_no_env_file "$rc" "0"
+        rc=0
+        docker run --rm --entrypoint go cfst-builder:test test ./... >"$TMP/go-test.log" 2>&1 || rc=$?
+        if [ "$rc" -eq 0 ]; then
+            ok test_go_download_quotas
+        else
+            bad test_go_download_quotas "$(tail -15 "$TMP/go-test.log")"
+        fi
     else
         bad test_builder_stage_has_no_env_file "构建阶段镜像失败: $(tail -3 "$TMP/build2.log" | tr '\n' ' ')"
     fi
     [ "$created_env" -eq 1 ] && rm -f "$REPO/.env"
 else
     skip test_builder_stage_has_no_env_file "本机没有 docker"
+    skip test_go_download_quotas "本机没有 docker"
 fi
 
 # ---------------------------------------------------------------------------

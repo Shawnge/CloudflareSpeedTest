@@ -39,7 +39,7 @@ services:
       GITHUB_BRANCH: ${GITHUB_BRANCH:-master}
       RESULT_PATH: ${RESULT_PATH:-result/result.txt}
 
-      # 筛选规则：保留的地区码（顺序即输出顺序）、每区保留延迟最低的条数
+      # HTTPing 先按地区筛选，每区独立凑满 TOP_N 个合格 IP；候选不足则保留实际数量
       REGIONS: ${REGIONS:-HKG,NRT,SIN,SJC,LAX}
       TOP_N: ${TOP_N:-8}
 
@@ -71,13 +71,14 @@ services:
 
       # 传给 cfst 的测速参数（等价于 -tl/-dn/-sl）。留空 = 不传该参数。
       #   CFST_TL  平均延迟上限(ms)   CFST_DN  下载测速数量   CFST_SL  下载速度下限(MB/s)
+      # 默认地区配额模式使用 TOP_N，CFST_DN 不再限制所有地区的合计数量。
       #
       # CFST_SL 默认 20，即**默认带一个下载速度门槛**；如果线路达不到，cfst 会输出 0 条结果、
       # 连 result.csv 都不创建，于是每天静默不发布（日志里只有一句「结果为空」）。
       # 本方案按延迟筛选、不需要速度门槛，想关掉就把 .env 里设成空值：CFST_SL=
-      CFST_TL: ${CFST_TL:-200}
-      CFST_DN: ${CFST_DN:-20}
-      CFST_SL: ${CFST_SL:-20}
+      CFST_TL: ${CFST_TL-200}
+      CFST_DN: ${CFST_DN-20}
+      CFST_SL: ${CFST_SL-20}
 
       # cfst 其它参数的兜底入口：这里写的内容会拼到 cfst 命令行前面。
       # 单个参数优先用上面三个变量；要传别的参数（如 -p 线程数、-t 次数）再用这个。
@@ -88,7 +89,7 @@ services:
     # 这里**故意不写 command**：测速参数一律走上面的环境变量，
     # 避免「.env 里改了 CFST_TL 却被 command 里的 -tl 无声压掉」。
     # 想临时试参数（跑一轮，命令行的参数优先）：
-    #   docker compose run --rm -e CRON_SCHEDULE= cfst -tl 500 -dn 5
+    #   docker compose run --rm -e CRON_SCHEDULE= -e TOP_N=5 cfst -tl 500
 
     # 定时模式下容器要常驻，异常退出自动拉起
     restart: unless-stopped

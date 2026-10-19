@@ -18,16 +18,18 @@
 #                  （内置的 https://cf.xiu2.xyz/url 在部分网络会返回 403，
 #                   后果是所有下载速度 0.00、地区码全是 N/A、结果为空）
 #   CFST_TL        平均延迟上限(ms)，非空时作为 -tl 传给 cfst
-#   CFST_DN        下载测速数量，非空时作为 -dn 传给 cfst
+#   CFST_DN        普通模式的下载测速数量；地区配额模式由 TOP_N 决定
 #   CFST_SL        下载速度下限(MB/s)，非空时作为 -sl 传给 cfst；想关掉就设成空值
-#   其余（GITHUB_*、REGIONS、TOP_N、TZ 等）原样透传给 publish.sh
+#   REGIONS        测速和发布保留的地区码，逗号分隔；通过 HTTPing 提前筛选
+#   TOP_N          每个地区独立获取的合格 IP 数量（默认 8），候选不足时保留实际数量
+#   其余（GITHUB_*、TZ 等）原样透传给 publish.sh
 set -eu
 
 : "${DATA_DIR:=/data}"
 : "${CFST_BIN:=/opt/cfst/cfst}"
 : "${PUBLISH_SH:=$(dirname "$CFST_BIN")/publish.sh}"
 # 注意用 - 而不是 := —— 空串是「不要定时、单次运行」的合法取值，不能被默认值顶掉
-: "${CRON_SCHEDULE-0 4 * * *}"
+CRON_SCHEDULE=${CRON_SCHEDULE-0 4 * * *}
 : "${RUN_ON_START:=1}"
 : "${CFST_ARGS:=}"
 : "${CFST_URL:=}"
@@ -37,6 +39,10 @@ set -eu
 : "${CFST_TL:=}"
 : "${CFST_DN:=}"
 : "${CFST_SL:=}"
+REGIONS=$(printf '%s' "${REGIONS-}" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+: "${REGIONS:=HKG,NRT,SIN,SJC,LAX}"
+: "${TOP_N:=8}"
+export REGIONS TOP_N
 
 CFST_DIR=$(dirname "$CFST_BIN")
 RESULT_CSV="$DATA_DIR/result.csv"
@@ -73,7 +79,7 @@ add_cfst_opt() {
     opt_val=$3
     [ -n "$opt_val" ] || return 0
     case " $ARGS " in
-    *" $opt_flag "*)
+    *" $opt_flag "* | *" $opt_flag="*)
         echo "[entrypoint] WARN 参数里已经有 ${opt_flag}，忽略 ${opt_name}=${opt_val}（以显式参数为准）" >&2
         ;;
     *) ARGS="$ARGS $opt_flag $opt_val" ;;
@@ -83,6 +89,14 @@ add_cfst_opt() {
 add_cfst_opt -tl CFST_TL "$CFST_TL"
 add_cfst_opt -dn CFST_DN "$CFST_DN"
 add_cfst_opt -sl CFST_SL "$CFST_SL"
+
+# 地区码来自 HTTP 响应头，必须先按地区筛选，再应用下载测速数量上限。
+case " $ARGS " in
+*' -httping '* | *' -httping='*) : ;;
+*) ARGS="$ARGS -httping" ;;
+esac
+add_cfst_opt -cfcolo REGIONS "$REGIONS"
+add_cfst_opt -dn-per-colo TOP_N "$TOP_N"
 
 # 未显式指定 -o 时补上固定输出路径。
 # 必须是固定名（不能用时间戳），因为下游 publish.sh 只认 $DATA_DIR/result.csv。
@@ -150,6 +164,9 @@ if [ "$n" -ne 5 ]; then
     echo "[entrypoint] 错误: CRON_SCHEDULE 必须是 5 段，实际 $n 段: '$CRON_SCHEDULE'" >&2
     exit 1
 fi
+
+# RUN_ON_START=0 时也要先建目录，否则 cron 在重定向日志时就会失败。
+mkdir -p "$DATA_DIR"
 
 if [ "$RUN_ON_START" = "1" ]; then
     rc=0
