@@ -39,6 +39,76 @@ fail() {
     return 1
 }
 
+# 机场三字码 -> 国家/地区旗帜。未列出的地区不加 emoji。
+region_flag() {
+    case "$1" in
+    HKG) printf '🇭🇰' ;;
+    NRT|HND|KIX|ITM|NGO|FUK|CTS|OKA) printf '🇯🇵' ;;
+    SIN) printf '🇸🇬' ;;
+    SJC|LAX|SFO|SEA|PDX|DEN|DFW|ORD|ATL|MIA|IAD|EWR|JFK|BOS|PHX|LAS|MSP|DTW|PHL|CLT|AUS|SAN|SLC|HNL|ANC) printf '🇺🇸' ;;
+    YYZ|YVR|YUL|YYC|YOW) printf '🇨🇦' ;;
+    MEX) printf '🇲🇽' ;;
+    GRU|GIG) printf '🇧🇷' ;;
+    EZE) printf '🇦🇷' ;;
+    SCL) printf '🇨🇱' ;;
+    BOG) printf '🇨🇴' ;;
+    LIM) printf '🇵🇪' ;;
+    LHR|LGW|MAN|EDI) printf '🇬🇧' ;;
+    CDG|MRS) printf '🇫🇷' ;;
+    FRA|MUC|BER|DUS) printf '🇩🇪' ;;
+    AMS) printf '🇳🇱' ;;
+    BRU) printf '🇧🇪' ;;
+    ZRH|GVA) printf '🇨🇭' ;;
+    VIE) printf '🇦🇹' ;;
+    FCO|MXP) printf '🇮🇹' ;;
+    MAD|BCN) printf '🇪🇸' ;;
+    LIS) printf '🇵🇹' ;;
+    DUB) printf '🇮🇪' ;;
+    CPH) printf '🇩🇰' ;;
+    ARN) printf '🇸🇪' ;;
+    OSL) printf '🇳🇴' ;;
+    HEL) printf '🇫🇮' ;;
+    WAW) printf '🇵🇱' ;;
+    PRG) printf '🇨🇿' ;;
+    OTP) printf '🇷🇴' ;;
+    ATH) printf '🇬🇷' ;;
+    IST) printf '🇹🇷' ;;
+    DME|SVO|LED) printf '🇷🇺' ;;
+    KBP) printf '🇺🇦' ;;
+    TLV) printf '🇮🇱' ;;
+    DXB|AUH) printf '🇦🇪' ;;
+    RUH|JED) printf '🇸🇦' ;;
+    DOH) printf '🇶🇦' ;;
+    KWI) printf '🇰🇼' ;;
+    BOM|DEL|BLR|MAA|HYD) printf '🇮🇳' ;;
+    KHI) printf '🇵🇰' ;;
+    DAC) printf '🇧🇩' ;;
+    CMB) printf '🇱🇰' ;;
+    PEK|PVG|CAN|SZX|CTU|CKG|WUH|XIY|HGH|NKG|TAO|TSN|CSX|KMG|XMN) printf '🇨🇳' ;;
+    MFM) printf '🇲🇴' ;;
+    TPE|KHH) printf '🇹🇼' ;;
+    ICN|GMP|PUS) printf '🇰🇷' ;;
+    KUL) printf '🇲🇾' ;;
+    BKK|DMK) printf '🇹🇭' ;;
+    SGN|HAN) printf '🇻🇳' ;;
+    PNH) printf '🇰🇭' ;;
+    MNL|CEB) printf '🇵🇭' ;;
+    CGK|DPS) printf '🇮🇩' ;;
+    SYD|MEL|BNE|PER|ADL) printf '🇦🇺' ;;
+    AKL|CHC) printf '🇳🇿' ;;
+    JNB|CPT) printf '🇿🇦' ;;
+    CAI) printf '🇪🇬' ;;
+    CMN) printf '🇲🇦' ;;
+    LOS) printf '🇳🇬' ;;
+    NBO) printf '🇰🇪' ;;
+    ADD) printf '🇪🇹' ;;
+    MRU) printf '🇲🇺' ;;
+    RUN) printf '🇷🇪' ;;
+    MLE) printf '🇲🇻' ;;
+    *) return 0 ;;
+    esac
+}
+
 # convert <csv> <out.txt>
 #
 # 三件必须做对的事（改动前先读 tests/run_tests.sh）：
@@ -74,8 +144,14 @@ convert() {
             { buf[$1] = buf[$1] $0 "\n" }
             END { for (i = 1; i <= n; i++) printf "%s", buf[order[i]] }
         ' \
-        | LC_ALL=C awk -F"$TAB" '{ printf "%s#优选%s-%sm\n", $3, $1, $2 }' \
-        >"$out"
+        | while IFS="$TAB" read -r region delay ip; do
+            flag=$(region_flag "$region")
+            if [ -n "$flag" ]; then
+                printf '%s %s#优选%s-%sms\n' "$flag" "$ip" "$region" "$delay"
+            else
+                printf '%s#优选%s-%sms\n' "$ip" "$region" "$delay"
+            fi
+        done >"$out"
 
     if [ ! -s "$out" ]; then
         echo "[publish] WARN 转换结果为空（没有匹配的地区，或地区码全是 N/A）" >&2
