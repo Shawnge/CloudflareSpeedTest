@@ -150,8 +150,8 @@ IP 地址,已发送,已接收,丢包率,平均延迟,下载速度(MB/s),地区�
 ## \# Docker Compose 部署（定时测速 + 自动发布优选 IP）
 
 本仓库是 [XIU2/CloudflareSpeedTest](https://github.com/XIU2/CloudflareSpeedTest) 的 fork，额外提供一套 Docker Compose 部署：
-**定时测速 → 把结果转成 `国旗 IP#优选区域-延时ms` 文本 → 通过 GitHub API 发布到本仓库的 `result/result.txt`**，
-例：`🇭🇰 203.0.113.7#优选HKG-45.12ms`。行首国旗按机场三字码映射（已覆盖默认 5 个地区及常见 Cloudflare 地区），未收录的地区不加国旗。
+**定时测速 → 把结果转成 `IP#国旗优选区域-延时ms` 文本 → 通过 GitHub API 发布到本仓库的 `result/result.txt`**，
+例：`203.0.113.7#🇭🇰优选HKG-45.12ms`。备注中的国旗按机场三字码映射（已覆盖默认 5 个地区及常见 Cloudflare 地区），未收录的地区不加国旗。
 客户端（如 [edgetunnel](https://github.com/cmliu/edgetunnel)）直接读这个 raw 链接即可。
 
 整个流程跑在自己服务器上，默认每天 4 点（容器时区）跑一轮。

@@ -147,7 +147,7 @@ convert() {
         | while IFS="$TAB" read -r region delay ip; do
             flag=$(region_flag "$region")
             if [ -n "$flag" ]; then
-                printf '%s %s#优选%s-%sms\n' "$flag" "$ip" "$region" "$delay"
+                printf '%s#%s优选%s-%sms\n' "$ip" "$flag" "$region" "$delay"
             else
                 printf '%s#优选%s-%sms\n' "$ip" "$region" "$delay"
             fi

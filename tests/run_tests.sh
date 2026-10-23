@@ -199,9 +199,9 @@ row "$d/in.csv" 3.3.3.3 33.10 AMS      # 不在名单里
 row "$d/in.csv" 4.4.4.4 11.00 N/A      # 拿不到地区码
 row "$d/in.csv" 5.5.5.5 60.00 SIN
 convert "$d/in.csv" "$d/out.txt" "HKG,NRT,SIN,SJC,LAX"
-expected='🇭🇰 1.1.1.1#优选HKG-45.12ms
-🇯🇵 2.2.2.2#优选NRT-52.30ms
-🇸🇬 5.5.5.5#优选SIN-60.00ms'
+expected='1.1.1.1#🇭🇰优选HKG-45.12ms
+2.2.2.2#🇯🇵优选NRT-52.30ms
+5.5.5.5#🇸🇬优选SIN-60.00ms'
 assert_eq test_basic_filter_and_format "$(cat "$d/out.txt")" "$expected"
 
 # ---------------------------------------------------------------------------
@@ -213,10 +213,10 @@ row "$d/in.csv" 2.2.2.2 20.00 HKG
 row "$d/in.csv" 3.3.3.3 30.00 HKG
 row "$d/in.csv" 4.4.4.4 40.00 HKG
 convert "$d/in.csv" "$d/out.txt" "HKG"
-expected='🇭🇰 2.2.2.2#优选HKG-20.00ms
-🇭🇰 3.3.3.3#优选HKG-30.00ms
-🇭🇰 4.4.4.4#优选HKG-40.00ms
-🇭🇰 1.1.1.1#优选HKG-50.00ms'
+expected='2.2.2.2#🇭🇰优选HKG-20.00ms
+3.3.3.3#🇭🇰优选HKG-30.00ms
+4.4.4.4#🇭🇰优选HKG-40.00ms
+1.1.1.1#🇭🇰优选HKG-50.00ms'
 assert_eq test_outputs_every_row_in_region_order "$(cat "$d/out.txt")" "$expected"
 
 # ---------------------------------------------------------------------------
@@ -226,8 +226,8 @@ fixture "$d/in.csv"
 row "$d/in.csv" 1.1.1.1 20.00 HKG      # CSV 里 HKG 在前
 row "$d/in.csv" 2.2.2.2 30.00 SIN
 convert "$d/in.csv" "$d/out.txt" "SIN,HKG"
-expected='🇸🇬 2.2.2.2#优选SIN-30.00ms
-🇭🇰 1.1.1.1#优选HKG-20.00ms'
+expected='2.2.2.2#🇸🇬优选SIN-30.00ms
+1.1.1.1#🇭🇰优选HKG-20.00ms'
 assert_eq test_region_output_order "$(cat "$d/out.txt")" "$expected"
 
 # ---------------------------------------------------------------------------
@@ -238,9 +238,9 @@ row "$d/in.csv" 1.1.1.1 100.50 HKG
 row "$d/in.csv" 2.2.2.2 9.90 HKG
 row "$d/in.csv" 3.3.3.3 10.10 HKG
 convert "$d/in.csv" "$d/out.txt" "HKG"
-expected='🇭🇰 2.2.2.2#优选HKG-9.90ms
-🇭🇰 3.3.3.3#优选HKG-10.10ms
-🇭🇰 1.1.1.1#优选HKG-100.50ms'
+expected='2.2.2.2#🇭🇰优选HKG-9.90ms
+3.3.3.3#🇭🇰优选HKG-10.10ms
+1.1.1.1#🇭🇰优选HKG-100.50ms'
 assert_eq test_numeric_delay_sort "$(cat "$d/out.txt")" "$expected"
 
 # ---------------------------------------------------------------------------
@@ -250,8 +250,8 @@ fixture "$d/in.csv"
 row "$d/in.csv" 1.1.1.1 10.00 AMS
 row "$d/in.csv" 2.2.2.2 20.00 TPE
 convert "$d/in.csv" "$d/out.txt" "AMS,TPE"
-expected='🇳🇱 1.1.1.1#优选AMS-10.00ms
-🇹🇼 2.2.2.2#优选TPE-20.00ms'
+expected='1.1.1.1#🇳🇱优选AMS-10.00ms
+2.2.2.2#🇹🇼优选TPE-20.00ms'
 assert_eq test_common_region_flags "$(cat "$d/out.txt")" "$expected"
 
 d=$(newdir noflag)
@@ -260,6 +260,16 @@ row "$d/in.csv" 1.1.1.1 10.00 XYZ
 convert "$d/in.csv" "$d/out.txt" "XYZ"
 assert_eq test_unknown_region_has_no_flag "$(cat "$d/out.txt")" \
     '1.1.1.1#优选XYZ-10.00ms'
+
+# 国旗属于 # 后的备注，IPv4/IPv6 地址字段必须保持原样。
+d=$(newdir flagremark)
+fixture "$d/in.csv"
+row "$d/in.csv" 172.64.229.107 59.21 NRT
+row "$d/in.csv" 2606:4700::1111 60.00 NRT
+convert "$d/in.csv" "$d/out.txt" "NRT"
+expected='172.64.229.107#🇯🇵优选NRT-59.21ms
+2606:4700::1111#🇯🇵优选NRT-60.00ms'
+assert_eq test_flag_is_in_remark_for_ipv4_and_ipv6 "$(cat "$d/out.txt")" "$expected"
 
 # ---------------------------------------------------------------------------
 # 空结果：输出文件必须存在且为 0 字节（下游 push 据此判定「结果为空」）
@@ -287,7 +297,7 @@ d=$(newdir crlf)
 printf '%s\r\n' "$HEADER" >"$d/in.csv"
 printf '1.1.1.1,4,4,0.00,45.12,10.00,HKG\r\n' >>"$d/in.csv"
 convert "$d/in.csv" "$d/out.txt"
-assert_eq test_crlf_input "$(cat "$d/out.txt")" '🇭🇰 1.1.1.1#优选HKG-45.12ms'
+assert_eq test_crlf_input "$(cat "$d/out.txt")" '1.1.1.1#🇭🇰优选HKG-45.12ms'
 
 # ---------------------------------------------------------------------------
 # 非 IATA / 大小写不符 / 空的地区码：安全丢弃，不崩
@@ -300,7 +310,7 @@ row "$d/in.csv" 4.4.4.4 44.00 ""       # 空
 row "$d/in.csv" 5.5.5.5 55.00 HKG      # 唯一有效
 rc=0
 convert "$d/in.csv" "$d/out.txt" || rc=$?
-assert_eq test_non_iata_colo_dropped "$(cat "$d/out.txt")" '🇭🇰 5.5.5.5#优选HKG-55.00ms'
+assert_eq test_non_iata_colo_dropped "$(cat "$d/out.txt")" '5.5.5.5#🇭🇰优选HKG-55.00ms'
 assert_eq test_non_iata_colo_dropped_exit_code "$rc" "0"
 
 # ---------------------------------------------------------------------------
@@ -316,7 +326,7 @@ assert_contains test_push_skips_when_empty_warns "$(cat "$TMP/err")" "结果为�
 # ---------------------------------------------------------------------------
 # API 不可达：记日志 + 返回失败（绝不静默、绝不崩）
 d=$(newdir pushfail)
-printf '🇭🇰 1.1.1.1#优选HKG-45.12ms\n' >"$d/x.txt"
+printf '1.1.1.1#🇭🇰优选HKG-45.12ms\n' >"$d/x.txt"
 rc=0
 push "$d/x.txt" dummy 0 http://127.0.0.1:1 || rc=$?
 assert_eq test_push_reports_error_on_unreachable_api "$rc" "1"
@@ -325,7 +335,7 @@ assert_contains test_push_reports_error_on_unreachable_api_log "$(cat "$TMP/err"
 # ---------------------------------------------------------------------------
 # dry-run：地址不可达却退出 0，证明根本没发请求；同时要把将要提交的 JSON 打出来
 d=$(newdir dryrun)
-printf '🇭🇰 1.1.1.1#优选HKG-45.12ms\n' >"$d/x.txt"
+printf '1.1.1.1#🇭🇰优选HKG-45.12ms\n' >"$d/x.txt"
 rc=0
 push "$d/x.txt" dummy 1 http://127.0.0.1:1 || rc=$?
 assert_eq test_dry_run_exit_code "$rc" "0"
@@ -345,7 +355,7 @@ assert_eq test_no_variable_adjacent_to_non_ascii \
 if have_python; then
     # 创建：远端 404 -> 不带 sha 的 PUT
     d=$(newdir pushcreate)
-    printf '🇭🇰 1.1.1.1#优选HKG-45.12ms\n' >"$d/x.txt"
+    printf '1.1.1.1#🇭🇰优选HKG-45.12ms\n' >"$d/x.txt"
     mock_gh_start create
     rc=0
     push "$d/x.txt" tok 0 "http://127.0.0.1:$(cat "$TMP/mock_port")" || rc=$?
@@ -360,7 +370,7 @@ if have_python; then
 
     # 更新：远端 200 带 sha -> PUT 必须原样带上该 sha，且内容要能解回
     d=$(newdir pushupdate)
-    printf '🇯🇵 2.2.2.2#优选NRT-52.30ms\n' >"$d/x.txt"
+    printf '2.2.2.2#🇯🇵优选NRT-52.30ms\n' >"$d/x.txt"
     mock_gh_start update
     rc=0
     push "$d/x.txt" tok 0 "http://127.0.0.1:$(cat "$TMP/mock_port")" || rc=$?
@@ -371,7 +381,7 @@ if have_python; then
     assert_eq test_push_update_payload_sha \
         "$(jq -r '.sha' "$TMP/mock_put.json" 2>/dev/null)" "deadbeefcafe0000"
     assert_eq test_push_update_content_roundtrip \
-        "$(jq -r '.content' "$TMP/mock_put.json" 2>/dev/null | base64 -d 2>/dev/null)" "🇯🇵 2.2.2.2#优选NRT-52.30ms"
+        "$(jq -r '.content' "$TMP/mock_put.json" 2>/dev/null | base64 -d 2>/dev/null)" "2.2.2.2#🇯🇵优选NRT-52.30ms"
 else
     skip test_push_create_exit_code "本机没有 python3"
     skip test_push_update_exit_code "本机没有 python3"
@@ -403,8 +413,8 @@ chmod +x "$TMP/fake-cfst-ok"
 rc=0
 entrypoint_run "$d" "$TMP/fake-cfst-ok" "" "1" "" || rc=$?
 assert_eq test_entrypoint_single_run_exit_code "$rc" "0"
-expected='🇭🇰 1.1.1.1#优选HKG-45.12ms
-🇯🇵 2.2.2.2#优选NRT-52.30ms'
+expected='1.1.1.1#🇭🇰优选HKG-45.12ms
+2.2.2.2#🇯🇵优选NRT-52.30ms'
 assert_eq test_entrypoint_single_run_produces_txt "$(cat "$d/result.txt" 2>/dev/null)" "$expected"
 
 # REGIONS 必须在测速阶段生效，不能只从全区测速的前几个结果里过滤。
@@ -590,8 +600,8 @@ FAKEEOF
     assert_contains test_cron_passes_regions "$args" "-cfcolo NRT,SIN"
     assert_contains test_cron_enables_httping "$args" "-httping"
     assert_not_contains test_cron_no_per_region_quota "$args" "-dn-per-colo"
-    expected='🇯🇵 2.2.2.2#优选NRT-20.00ms
-🇸🇬 3.3.3.3#优选SIN-30.00ms'
+    expected='2.2.2.2#🇯🇵优选NRT-20.00ms
+3.3.3.3#🇸🇬优选SIN-30.00ms'
     assert_eq test_cron_publishes_only_regions \
         "$(docker exec "$CRON_CONTAINER" cat /scheduled/results/result.txt 2>/dev/null)" "$expected"
     assert_contains test_cron_dry_run_publish \
