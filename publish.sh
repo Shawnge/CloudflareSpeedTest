@@ -3,7 +3,7 @@
 #
 #   publish.sh convert <csv> <out.txt>    只做转换，不联网
 #   publish.sh push    <txt>              只做发布
-#   publish.sh all     <csv> <out.txt>    先转换再发布（结果为空则跳过发布）
+#   publish.sh all     <csv> <out.txt>    先转换再发布（结果不足 8 条则跳过发布）
 #
 # 环境变量（默认值见下）：
 #   REGIONS          保留的地区码，逗号分隔，顺序即输出顺序；
@@ -201,6 +201,12 @@ push() {
     # 守卫 1：结果为空 -> 绝不推送，保住远端上一版的好结果
     if [ ! -s "$txt" ]; then
         echo "[publish] WARN 结果为空，跳过发布" >&2
+        return 0
+    fi
+
+    result_count=$(LC_ALL=C awk '/[^[:space:]]/ { n++ } END { print n+0 }' "$txt")
+    if [ "$result_count" -lt 8 ]; then
+        echo "[publish] WARN 结果仅 ${result_count} 条（不足 8 条），跳过发布" >&2
         return 0
     fi
 

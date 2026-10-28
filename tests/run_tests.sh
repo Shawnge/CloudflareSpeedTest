@@ -54,6 +54,12 @@ row() { # <csv> <ip> <平均延迟> <地区码>
 }
 newdir() { mkdir -p "$TMP/$1"; printf '%s' "$TMP/$1"; }
 
+txt_fixture() { # <txt> <结果条数>
+    awk -v N="$2" 'BEGIN {
+        for (i = 1; i <= N; i++) printf "192.0.2.%d#🇯🇵优选NRT-52.30ms\n", i
+    }' >"$1"
+}
+
 # 调用 publish.sh push。所有变量都显式经 env 传入，避免用例之间串味，也避免测试脚本自身被污染。
 # <txt> <token> <dry_run> <api_base> [branch] [repo] [path]
 # stdout -> $TMP/out，stderr -> $TMP/err
@@ -323,10 +329,19 @@ push "$d/empty.txt" dummy 1 http://127.0.0.1:1 || rc=$?
 assert_eq test_push_skips_when_empty_exit_code "$rc" "0"
 assert_contains test_push_skips_when_empty_warns "$(cat "$TMP/err")" "结果为空"
 
+# 少于 8 条时，dry-run 也应显示跳过，而不是生成待发布内容。
+d=$(newdir pushshortdry)
+txt_fixture "$d/x.txt" 7
+rc=0
+push "$d/x.txt" dummy 1 http://127.0.0.1:1 || rc=$?
+assert_eq test_push_skips_seven_rows_dry_run_exit_code "$rc" "0"
+assert_contains test_push_skips_seven_rows_dry_run_warns "$(cat "$TMP/err")" "不足 8 条"
+assert_not_contains test_push_skips_seven_rows_dry_run_body "$(cat "$TMP/out")" "body"
+
 # ---------------------------------------------------------------------------
 # API 不可达：记日志 + 返回失败（绝不静默、绝不崩）
 d=$(newdir pushfail)
-printf '1.1.1.1#🇭🇰优选HKG-45.12ms\n' >"$d/x.txt"
+txt_fixture "$d/x.txt" 8
 rc=0
 push "$d/x.txt" dummy 0 http://127.0.0.1:1 || rc=$?
 assert_eq test_push_reports_error_on_unreachable_api "$rc" "1"
@@ -335,7 +350,7 @@ assert_contains test_push_reports_error_on_unreachable_api_log "$(cat "$TMP/err"
 # ---------------------------------------------------------------------------
 # dry-run：地址不可达却退出 0，证明根本没发请求；同时要把将要提交的 JSON 打出来
 d=$(newdir dryrun)
-printf '1.1.1.1#🇭🇰优选HKG-45.12ms\n' >"$d/x.txt"
+txt_fixture "$d/x.txt" 9
 rc=0
 push "$d/x.txt" dummy 1 http://127.0.0.1:1 || rc=$?
 assert_eq test_dry_run_exit_code "$rc" "0"
@@ -353,9 +368,22 @@ assert_eq test_no_variable_adjacent_to_non_ascii \
 # ---------------------------------------------------------------------------
 # push 的两条成功路径（用假 API，真发 HTTP）
 if have_python; then
+    # 空白与 CRLF 空行不能把 7 条结果补成 8 条，且不得更新远端。
+    d=$(newdir pushshort)
+    txt_fixture "$d/x.txt" 7
+    printf '\n\r\n \t\r\n' >>"$d/x.txt"
+    mock_gh_start update
+    rc=0
+    push "$d/x.txt" tok 0 "http://127.0.0.1:$(cat "$TMP/mock_port")" || rc=$?
+    mock_gh_stop
+    assert_eq test_push_skips_seven_rows_exit_code "$rc" "0"
+    assert_contains test_push_counts_only_nonblank_rows "$(cat "$TMP/err")" "结果仅 7 条"
+    assert_eq test_push_short_result_sends_no_put \
+        "$([ -e "$TMP/mock_put.json" ] && echo sent || echo skipped)" "skipped"
+
     # 创建：远端 404 -> 不带 sha 的 PUT
     d=$(newdir pushcreate)
-    printf '1.1.1.1#🇭🇰优选HKG-45.12ms\n' >"$d/x.txt"
+    txt_fixture "$d/x.txt" 8
     mock_gh_start create
     rc=0
     push "$d/x.txt" tok 0 "http://127.0.0.1:$(cat "$TMP/mock_port")" || rc=$?
@@ -370,7 +398,8 @@ if have_python; then
 
     # 更新：远端 200 带 sha -> PUT 必须原样带上该 sha，且内容要能解回
     d=$(newdir pushupdate)
-    printf '2.2.2.2#🇯🇵优选NRT-52.30ms\n' >"$d/x.txt"
+    txt_fixture "$d/with-newline.txt" 8
+    printf '%s' "$(cat "$d/with-newline.txt")" >"$d/x.txt"
     mock_gh_start update
     rc=0
     push "$d/x.txt" tok 0 "http://127.0.0.1:$(cat "$TMP/mock_port")" || rc=$?
@@ -381,8 +410,9 @@ if have_python; then
     assert_eq test_push_update_payload_sha \
         "$(jq -r '.sha' "$TMP/mock_put.json" 2>/dev/null)" "deadbeefcafe0000"
     assert_eq test_push_update_content_roundtrip \
-        "$(jq -r '.content' "$TMP/mock_put.json" 2>/dev/null | base64 -d 2>/dev/null)" "2.2.2.2#🇯🇵优选NRT-52.30ms"
+        "$(jq -r '.content' "$TMP/mock_put.json" 2>/dev/null | base64 -d 2>/dev/null)" "$(cat "$d/x.txt")"
 else
+    skip test_push_skips_seven_rows_exit_code "本机没有 python3"
     skip test_push_create_exit_code "本机没有 python3"
     skip test_push_update_exit_code "本机没有 python3"
 fi
@@ -602,10 +632,10 @@ FAKEEOF
     assert_not_contains test_cron_no_per_region_quota "$args" "-dn-per-colo"
     expected='2.2.2.2#🇯🇵优选NRT-20.00ms
 3.3.3.3#🇸🇬优选SIN-30.00ms'
-    assert_eq test_cron_publishes_only_regions \
+    assert_eq test_cron_converts_only_regions \
         "$(docker exec "$CRON_CONTAINER" cat /scheduled/results/result.txt 2>/dev/null)" "$expected"
-    assert_contains test_cron_dry_run_publish \
-        "$(docker exec "$CRON_CONTAINER" cat /scheduled/results/cfst.log 2>/dev/null)" "DRY-RUN"
+    assert_contains test_cron_skips_short_result \
+        "$(docker exec "$CRON_CONTAINER" cat /scheduled/results/cfst.log 2>/dev/null)" "结果仅 2 条"
     docker rm -fv "$CRON_CONTAINER" >/dev/null 2>&1
     CRON_CONTAINER=
 }

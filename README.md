@@ -208,7 +208,7 @@ EOF
 > **不要填 `127.0.0.1`** —— 构建容器里的 `127.0.0.1` 指容器自己，要用 docker0 网关（`172.17.0.1`）
 > 或宿主机内网 IP。另外默认的 `GOPROXY` 已优先走国内 `goproxy.cn` 镜像，多数国内服务器**不配代理也能构建**。
 
-`REGIONS` 会自动启用 HTTPing 地区筛选，地区码支持小写和逗号两侧的空格。延迟扫描只执行一次，随后按延迟排序做下载测速；`CFST_DN`（即 `-dn`）同时决定下载测速总数和 `result.csv` 的行数，候选不足时保留实际合格数量。发布时只做地区过滤和排序，按 `REGIONS` 声明顺序输出，不再截断；延迟、丢包和速度门槛仍然生效。
+`REGIONS` 会自动启用 HTTPing 地区筛选，地区码支持小写和逗号两侧的空格。延迟扫描只执行一次，随后按延迟排序做下载测速；`CFST_DN`（即 `-dn`）同时决定下载测速总数和 `result.csv` 的行数，候选不足时保留实际合格数量。发布时只做地区过滤和排序，按 `REGIONS` 声明顺序输出，不再截断；延迟、丢包和速度门槛仍然生效。最终结果不足 8 条时保留 GitHub 上一版内容，本地结果照常生成。
 
 cfst 自身的测速参数一律通过上面的 `CFST_TL` / `CFST_DN` / `CFST_SL` 环境变量传递
 （compose 里**故意不写 `command:`**，否则 `.env` 里改的值会被 `command:` 里的同名选项无声压掉）。
@@ -281,6 +281,7 @@ https://raw.githubusercontent.com/Shawnge/CloudflareSpeedTest/master/result/resu
 | **构建/部署**报 `go build ... did not complete successfully: exit code: 1` | 构建期下载依赖失败（**不是代码问题**，本仓库源码可正常编译）。按 §2 透传构建期代理：`BUILD_HTTPS_PROXY` / `BUILD_HTTP_PROXY`，地址要用**容器可达**的 `http://172.17.0.1:7890`，不能填 `127.0.0.1` |
 | 日志出现 `发布失败: HTTP 401` | token 过期或被撤销。换新 token 后 `docker compose up -d --force-recreate`。**容器不会因此死掉**，远端仍保留上一版好结果 |
 | 日志出现 `结果为空，跳过发布` | 本轮没测出可用结果，远端保持上一版。原因见下面几行 |
+| 日志出现 `不足 8 条` | 本轮最终结果少于 8 条，跳过 GitHub 更新并保留上一版；本地结果仍可查看 |
 | **每轮**都是「结果为空」（地区码却正常） | 最可能是 `CFST_SL`（默认 `20` MB/s）高于你的实际带宽。cfst 在**没有任何 IP 达到该速度**时会输出 0 条结果，**连 `result.csv` 都不创建**，于是每天都静默不发布。把 `CFST_SL` 调低，或在 `.env` 里设成空值 `CFST_SL=` 彻底关掉（本方案的筛选规则只按延迟，不需要速度下限） |
 | 地区码全是 `N/A`、下载速度全是 `0.00` | 下载测速没成功 → 拿不到地区码 → 被空结果守卫拦住。① 加 `-debug` 看真实报错（`CFST_ARGS=-debug`，或 `docker compose run --rm -e CRON_SCHEDULE= cfst -debug`）；② 确认没有加 `-dd`（禁用下载测速会导致地区码全为 `N/A`）；③ 换 `CFST_URL`（见下一行） |
 | 想换测速地址 | `CFST_URL` 的域名必须由 **Cloudflare 边缘**提供服务：cfst 会拿 `ip.txt` 里的 IP 直接拨号、SNI/Host 用该域名，所以要用「正常挂在 CF 上的域名」下的大文件（可下载、>200MB、走 CF CDN）。**不要**填 `speed.cloudflare.com`——实测它不由任意 CF 边缘提供，拿 `ip.txt` 的 IP 连它会 TLS 握手失败（cfst 报 `下载测速失败 ... EOF`），地区码永远填不上 |
